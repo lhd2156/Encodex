@@ -1,0 +1,2 @@
+# Encodex
+Senior Design Project.
