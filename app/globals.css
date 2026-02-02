@@ -24,3 +24,67 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* react-pdf text / annotation layer styles (copied minimal set) */
+.react-pdf__Page__annotations,
+.react-pdf__AnnotationLayer,
+.react-pdf__Page__annotationLayer,
+.react-pdf__Page__annotationLayer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 100%;
+  pointer-events: auto;
+}
+
+.react-pdf__Page__textContent,
+.react-pdf__TextLayer,
+.react-pdf__Page__textLayer,
+.react-pdf__Page__textContent {
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  color: transparent; /* hide original text, we use it for selection/search */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.react-pdf__Page__textContent > span,
+.react-pdf__TextLayer span {
+  display: inline-block;
+  transform-origin: 0 0;
+  white-space: pre;
+  pointer-events: none;
+}
+
+/* Ensure PDF canvas renders as block to avoid layout issues */
+.react-pdf__Page canvas {
+  display: block;
+  max-width: 100%;
+}
+
+/* Additional helpers to ensure text selection layers behave */
+.react-pdf__Page__textContent, .react-pdf__TextLayer {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Annotation layer default pointer behaviour */
+.react-pdf__AnnotationLayer * {
+  pointer-events: auto;
+}
+
+/* Additional official/react-pdf-compatible selectors to ensure first-render checks pass
+   (covers a few selector variations used across react-pdf versions and bundles) */
+.react-pdf__Page__textLayer,
+.react-pdf__Page__textLayer > span,
+.react-pdf__TextLayer > span,
+.react-pdf__page,
+.react-pdf__page canvas { display: block; }
+
+/* Keep text layer accessible for selection but visually hidden for the canvas render */
+.react-pdf__Page__textLayer,
+.react-pdf__TextLayer { color: transparent; user-select: text; }

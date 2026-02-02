@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { VaultProvider } from "../lib/vault/vault-provider";
+import DevSessionClear from "@/components/DevSessionClear";
+import SharedToast from '@/components/vault/SharedToast';
 import "./globals.css";
+
+// React-PDF text/annotation layer styles — import globally so the library
+// can detect them immediately and avoid console warnings at runtime.
+import 'react-pdf/dist/esm/Page/TextLayer.css';
+import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -22,13 +30,20 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Note: We handle session reset client-side in app/(auth)/login and register
+  // and in the vault page via session validation
   return (
     <html lang="en">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <DevSessionClear />
+        <VaultProvider>
+          {children}
+          <SharedToast />
+        </VaultProvider>
       </body>
+
     </html>
   );
 }
