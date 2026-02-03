@@ -68,6 +68,13 @@ class FileStorage {
   }
 
   /**
+   * Alias for storeFile (for backward compatibility)
+   */
+  async saveFile(fileId: string, file: File | Blob): Promise<void> {
+    return this.storeFile(fileId, file);
+  }
+
+  /**
    * Retrieve a file blob from IndexedDB
    */
   async getFile(fileId: string): Promise<Blob | null> {

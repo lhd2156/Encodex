@@ -35,6 +35,9 @@ interface FileItem {
   parentFolderId?: string | null;
   isFavorite?: boolean;
   sharedBy?: string;
+  owner?: string;
+  ownerName?: string;
+  isReceivedShare?: boolean;
 }
 
 export default function VaultPage() {
@@ -58,8 +61,6 @@ export default function VaultPage() {
   const maxSidebarWidth = 600;
 
   // Use the vault hook
-  // FIX 1: Added handleShareFile to the destructuring so we actually get
-  //         the hook's 3-argument share function into scope.
   const {
     files,
     deletedFiles,
@@ -85,19 +86,17 @@ export default function VaultPage() {
     handleRenameFile,
     handleDeleteFile,
     handleRestoreFile,
-    handleRestoreFiles,
     handlePermanentDelete,
     handleMoveToFolder,
     handleDownloadFile,
     handleToggleFavorite,
-    handleShareFile,           // <-- THIS was missing. It's the real share logic.
-    handleUnshareAll,
+    handleShareFile,
     handleBulkDelete,
     handleBulkRestore,
     handleBulkPermanentDelete,
     handleSortChange,
     getSharedFilesCount,
-  } = useVault(userEmail);
+  } = useVault(userEmail, userName);
 
   const [showUploadMenu, setShowUploadMenu] = React.useState(false);
   const [showFolderModal, setShowFolderModal] = React.useState(false);
@@ -293,10 +292,6 @@ export default function VaultPage() {
     setSelectedFiles(newSelected);
   };
 
-  // FIX 2: Renamed from handleShareFile → openShareModal.
-  //         The old name shadowed the hook's handleShareFile, so the modal's
-  //         onShare was calling THIS (which just re-opens the modal and returns
-  //         undefined) instead of the hook's actual share logic.
   const openShareModal = (id: string) => {
     setShareTargetId(id);
     setShareModalOpen(true);
@@ -733,8 +728,8 @@ export default function VaultPage() {
             }}
             onRecoverAll={() => {
               if (currentTab === 'trash' && displayFiles.length > 0) {
-                const ids = displayFiles.map((f) => f.id);
-                handleRestoreFiles(ids);
+                const toRestore = [...displayFiles];
+                toRestore.forEach(f => handleRestoreFile(f.id));
               }
             }}
             onDeleteAll={() => {
@@ -925,7 +920,7 @@ export default function VaultPage() {
                                 />
                                 {/* Spacer to push paperclip to the right, closer to paper icon */}
                                 <div className="flex-1" />
-                                {/* Paperclip indicator for shared files - right next to the Name column */}
+                                {/* ✅ FIX: Paperclip indicator for shared files - right next to the Name column */}
                                 <span className="flex-shrink-0 w-[16px] flex items-center justify-center leading-none">
                                   {(item as any).isReceivedShare && (
                                     <span className="text-sm opacity-70">📎</span>
@@ -958,7 +953,7 @@ export default function VaultPage() {
                                 </div>
                               </div>
 
-                              {/* Owner */}
+                              {/* ✅ FIX: Owner - shows actual owner for shared files */}
                               <div className="col-span-2 flex items-center min-w-0 h-full">
                                 <div className="flex items-center gap-2 min-w-0">
                                   <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
@@ -968,7 +963,11 @@ export default function VaultPage() {
                                     {(() => {
                                       if ((item as any).isReceivedShare) {
                                         if ((item as any).ownerName && (item as any).owner) {
-                                          return `${(item as any).ownerName} (${(item as any).owner})`;
+                                          // ✅ FIX: only show "Name (email)" when name ≠ email
+                                          if ((item as any).ownerName !== (item as any).owner) {
+                                            return `${(item as any).ownerName} (${(item as any).owner})`;
+                                          }
+                                          return (item as any).owner;
                                         }
                                         if ((item as any).ownerName) return (item as any).ownerName;
                                         if ((item as any).owner) return (item as any).owner;
@@ -991,11 +990,6 @@ export default function VaultPage() {
                                     e.stopPropagation();
                                     setCurrentTab('vault');
                                     setCurrentFolderId(item.parentFolderId || null);
-                                    // After navigating to the parent folder, also select the file
-                                    // so it becomes checked in the destination view.
-                                    setTimeout(() => {
-                                      handleSelectFile(item.id);
-                                    }, 100);
                                   }}
                                   className="text-blue-400 hover:text-blue-300 hover:underline transition-colors truncate"
                                 >
@@ -1011,7 +1005,7 @@ export default function VaultPage() {
                               {/* Action Buttons */}
                               <div className="col-span-1 flex items-center justify-end h-full">
                                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {/* Share — FIX 2: calls openShareModal, not handleShareFile */}
+                                  {/* Share */}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1126,7 +1120,6 @@ export default function VaultPage() {
               onDownloadFile={handleDownloadFile}
               onToggleFavorite={handleToggleFavorite}
               onShareFile={openShareModal}
-              onUnshareFile={(fileId) => handleUnshareAll(fileId)}
               onOpenFile={handleOpenFile}
               sortBy={sortBy}
               sortOrder={sortOrder}
@@ -1211,10 +1204,6 @@ export default function VaultPage() {
         itemType={renameTargetId ? (files.find(f => f.id === renameTargetId)?.type || 'file') : 'file'}
       />
 
-      {/* FIX 3: onShare now calls the hook's handleShareFile (the real one).
-          It returns a boolean — true = success, false = failure.
-          The ShareModal uses that boolean to show its own success/error state
-          and auto-closes itself after 2 seconds on success. */}
       <ShareModal
         isOpen={shareModalOpen}
         onClose={() => {

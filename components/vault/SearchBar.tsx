@@ -277,20 +277,22 @@ export default function SearchBar({ files, onSelectFile, onOpenFolder }: SearchB
                     </span>
                     
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm text-white font-medium truncate flex items-center gap-2">
+                      <div className="text-sm text-white font-medium truncate">
                         {highlight(file.name, query)}
-                        {(file as any).isReceivedShare && (
-                          <span className="text-sm opacity-80">📎</span>
-                        )}
                       </div>
                       <div className="text-xs text-gray-400 mt-0.5">
                         {file.type === 'folder' ? 'Folder' : 'File'} • Modified {formatDate(file.createdAt)}
                       </div>
                     </div>
                     
-                    {file.isFavorite && (
-                      <span className="text-base flex-shrink-0">❤️</span>
-                    )}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {(file as any).isReceivedShare && (
+                        <span className="text-base" title="Shared with you">📎</span>
+                      )}
+                      {file.isFavorite && (
+                        <span className="text-base" title="Favorite">❤️</span>
+                      )}
+                    </div>
                   </button>
                 ))}
               </>

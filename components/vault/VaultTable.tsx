@@ -10,6 +10,9 @@ interface FileItem {
   createdAt: Date;
   parentFolderId?: string | null;
   isFavorite?: boolean;
+  owner?: string;
+  ownerName?: string;
+  isReceivedShare?: boolean;
 }
 
 interface VaultTableProps {
@@ -204,38 +207,31 @@ export default function VaultTable({
                   setDragOverId(item.id);
                 }
               }}
-              onDragEnter={(e) => {
-                if (canDropHere) {
-                  e.preventDefault();
-                  setDragOverId(item.id);
-                }
-              }}
               onDragLeave={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const x = e.clientX;
-                const y = e.clientY;
-                
-                if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
-                  if (dragOverId === item.id) {
+                if (canDropHere) {
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  const x = e.clientX;
+                  const y = e.clientY;
+
+                  if (
+                    x < rect.left ||
+                    x >= rect.right ||
+                    y < rect.top ||
+                    y >= rect.bottom
+                  ) {
                     setDragOverId(null);
                   }
                 }
               }}
               onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setDragOverId(null);
-                
                 if (canDropHere) {
+                  e.preventDefault();
+                  e.stopPropagation();
                   onDrop(e, item.id);
+                  setDragOverId(null);
                 }
               }}
-              onDragEnd={() => {
-                setDragOverId(null);
-              }}
-              onContextMenu={(e) => onContextMenu(e, item.id)}
               onClick={(e) => {
-                // Single click anywhere (except name or buttons) selects the file
                 const target = e.target as HTMLElement;
                 
                 // Check if click was on checkbox, buttons, or name
@@ -264,21 +260,39 @@ export default function VaultTable({
                 }
               }}
             >
-              <div className="col-span-1 flex items-center justify-center h-full">
+              {/* ✅ FIX: Checkbox + Paperclip Area */}
+              <div className="col-span-1 flex items-center h-full">
                 <input
                   type="checkbox"
                   checked={selectedFiles.has(item.id)}
                   onChange={() => onSelectFile(item.id)}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-4 h-4 rounded border-gray-500 text-teal-400 cursor-pointer"
+                  className="w-4 h-4 rounded border-gray-500 text-teal-400 cursor-pointer flex-shrink-0"
                 />
+                {/* Spacer to push paperclip to the right, closer to paper icon */}
+                <div className="flex-1" />
+                {/* ✅ FIX: Paperclip indicator - show for BOTH received shares AND files you've shared */}
+                <span className="flex-shrink-0 w-[16px] flex items-center justify-center leading-none">
+                  {((item as any).isReceivedShare || (item as any).sharedWith?.length > 0) && (
+                    <span 
+                      className="text-sm opacity-70 cursor-help"
+                      title={
+                        (item as any).isReceivedShare 
+                          ? `Shared by ${(item as any).ownerName || (item as any).owner}`
+                          : `Shared with: ${(item as any).sharedWith?.join(', ')}`
+                      }
+                    >
+                      📎
+                    </span>
+                  )}
+                </span>
               </div>
 
               {/* Name with HEART for favorites */}
-              <div className="col-span-3 flex items-center gap-3 min-w-0 max-w-full overflow-hidden h-full">
+              <div className="col-span-3 flex items-center min-w-0 max-w-full overflow-hidden h-full">
                 <div
                   data-name-click-area
-                  className="flex items-center gap-3 w-full cursor-pointer min-w-0 overflow-hidden"
+                  className="flex items-center w-full cursor-pointer min-w-0 overflow-hidden"
                   onClick={(e) => {
                     e.stopPropagation();
                     if (item.type === 'folder') {
@@ -288,13 +302,16 @@ export default function VaultTable({
                     }
                   }}
                 >
-                  <span className="text-2xl flex-shrink-0 leading-none">
+                  {/* Paper icon: ALWAYS 32px wide, aligned to start of Name column */}
+                  <span className="flex-shrink-0 w-[32px] flex items-center justify-center leading-none text-2xl">
                     {item.type === 'folder' 
                       ? '📁' 
                       : item.name.toLowerCase().endsWith('.pdf')
                         ? '📄'
                         : '📄'}
                   </span>
+                  {/* 12px fixed spacer between icon and text */}
+                  <span className="flex-shrink-0 w-[12px]" />
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <span className="text-sm text-white font-medium block truncate leading-tight hover:underline">
                       {item.name}
@@ -302,18 +319,33 @@ export default function VaultTable({
                   </div>
                   {/* Heart icon shows for ALL favorited items regardless of tab */}
                   {item.isFavorite && (
-                    <span className="text-base flex-shrink-0 leading-none">❤️</span>
+                    <span className="text-base flex-shrink-0 leading-none ml-2">❤️</span>
                   )}
                 </div>
               </div>
 
-              {/* Owner */}
+              {/* ✅ FIX: Owner - shows actual owner for shared files */}
               <div className="col-span-2 flex items-center min-w-0 h-full">
                 <div className="flex items-center gap-2 min-w-0">
                   <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
                     <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
                   </svg>
-                  <span className="text-xs text-gray-400 truncate leading-tight">me</span>
+                  <span className="text-xs text-gray-400 truncate leading-tight">
+                    {(() => {
+                      if ((item as any).isReceivedShare) {
+                        if ((item as any).ownerName && (item as any).owner) {
+                          // ✅ FIX: only show "Name (email)" when name ≠ email
+                          if ((item as any).ownerName !== (item as any).owner) {
+                            return `${(item as any).ownerName} (${(item as any).owner})`;
+                          }
+                          return (item as any).owner;
+                        }
+                        if ((item as any).ownerName) return (item as any).ownerName;
+                        if ((item as any).owner) return (item as any).owner;
+                      }
+                      return 'me';
+                    })()}
+                  </span>
                 </div>
               </div>
               
