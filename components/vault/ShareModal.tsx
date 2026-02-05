@@ -8,7 +8,10 @@ type ShareModalProps = {
   currentUserName: string;
   currentUserEmail: string;
   fileName: string;
+  fileId?: string | null;
+  currentSharedWith?: string[];
   onShare: (recipientEmail: string) => boolean | Promise<boolean>; // Returns success/failure (async or sync)
+  onUnshare?: (recipientEmail: string) => boolean | Promise<boolean>;
 };
 
 export default function ShareModal({
@@ -17,7 +20,10 @@ export default function ShareModal({
   currentUserName,
   currentUserEmail,
   fileName,
+  fileId,
+  currentSharedWith,
   onShare,
+  onUnshare,
 }: ShareModalProps) {
   const [recipientEmail, setRecipientEmail] = useState('');
   const [error, setError] = useState('');
@@ -95,6 +101,20 @@ export default function ShareModal({
           </div>
         </div>
 
+        {/* Current recipients list */}
+        {currentSharedWith && currentSharedWith.length > 0 && (
+          <div className="mb-6 p-4 bg-blue-950/20 rounded-lg border border-blue-700/30">
+            <p className="text-sm text-gray-400 mb-2">Shared with</p>
+            <div className="flex flex-col gap-2">
+              {currentSharedWith.map((r) => (
+                <div key={r} className="flex items-center justify-between">
+                  <div className="text-sm text-gray-200">{r}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Success Message */}
         {success && (
           <div className="mb-6 p-4 bg-teal-500/20 rounded-lg border border-teal-400/50 animate-fade-in">
@@ -155,6 +175,29 @@ export default function ShareModal({
           >
             {success ? 'Close' : 'Cancel'}
           </button>
+          {!success && currentSharedWith && currentSharedWith.length > 0 && (
+            <button
+              onClick={async () => {
+                if (!onUnshare) return;
+                if (!recipientEmail || !currentSharedWith.includes(recipientEmail)) {
+                  setError('Enter an email that this file is currently shared with to unshare');
+                  return;
+                }
+                setError('');
+                const result = await onUnshare(recipientEmail);
+                if (result) {
+                  setSuccess(true);
+                  setTimeout(() => handleClose(), 1200);
+                } else {
+                  setError('Failed to unshare.');
+                }
+              }}
+              className="px-6 py-2.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold transition-colors"
+            >
+              Unshare
+            </button>
+          )}
+
           {!success && (
             <button
               onClick={handleShare}

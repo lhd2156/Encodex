@@ -200,3 +200,72 @@ export async function verifyPassword(userEmail: string, password: string): Promi
   
   return hashHex === storedHash;
 }
+
+/* ========= Recovery Key Encryption ========= */
+
+/**
+ * Generates and encrypts a recovery key.
+ * @param {string} password - The password used to derive the encryption key.
+ * @param {BufferSource} salt - The salt used for key derivation.
+ * @returns {Promise<{ encryptedKey: ArrayBuffer, iv: Uint8Array }>} - The encrypted recovery key and initialization vector.
+ */
+export async function generateAndEncryptRecoveryKey(
+  password: string,
+  salt: BufferSource
+): Promise<{ encryptedKey: ArrayBuffer; iv: Uint8Array }> {
+  // Generate a random recovery key
+  const recoveryKey = crypto.getRandomValues(new Uint8Array(32));
+
+  // Derive an encryption key from the password and salt
+  const encryptionKey = await deriveMasterKey(password, salt);
+
+  // Generate a random initialization vector (IV)
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+
+  // Encrypt the recovery key
+  const encryptedKey = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    encryptionKey,
+    recoveryKey
+  );
+
+  return { encryptedKey, iv };
+}
+
+/* ========= Recovery Key Decryption ========= */
+
+/**
+ * Decrypts an encrypted recovery key.
+ * @param {Object} recoveryKeyData - The encrypted recovery key data.
+ * @param {string} password - The password used to derive the decryption key.
+ * @param {BufferSource} salt - The salt used for key derivation.
+ * @returns {Promise<string>} - The decrypted recovery key as a string.
+ */
+export async function decryptRecoveryKey(
+  recoveryKeyData: { encryptedKey: number[]; iv: number[] },
+  password: string,
+  salt: BufferSource
+): Promise<string> {
+  const { encryptedKey, iv } = recoveryKeyData;
+
+  // Derive the decryption key from the password and salt
+  const saltBuffer = new Uint8Array(salt as ArrayBuffer); // Ensure salt is a Uint8Array
+  const decryptionKey = await deriveMasterKey(password, saltBuffer);
+
+  // Decrypt the recovery key
+  const decryptedKeyBuffer = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: new Uint8Array(iv),
+    },
+    decryptionKey,
+    new Uint8Array(encryptedKey)
+  );
+
+  // Convert the decrypted ArrayBuffer to a string
+  const decoder = new TextDecoder();
+  return decoder.decode(decryptedKeyBuffer);
+}

@@ -9,6 +9,7 @@ export interface Session {
   expiresAt: number;
 }
 
+const SESSION_KEY = 'user_session';
 const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 const REMEMBER_ME_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
 
@@ -46,6 +47,9 @@ export function createSession(
   };
 
   if (typeof window !== 'undefined') {
+    // Store in both locations for compatibility
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    
     if (rememberMe) {
       localStorage.setItem('session', JSON.stringify(session));
     } else {
@@ -92,6 +96,7 @@ export function createSession(
             if (shouldRestore && backupVal !== null) {
               localStorage.setItem(key, backupVal as string);
               console.log('🔁 Restored vault key from backup (overwrite?:', exists != null, ')', key, 'len', backupLen);
+              try { console.log('🔁 [RESTORE] Key preview (first 200 chars):', (backupVal as string).slice(0,200)); } catch(e){}
             } else {
               console.debug('session: skipping restore for', key, 'shouldRestore', shouldRestore);
             }
@@ -121,6 +126,12 @@ export function createSession(
         if (!vRaw) isEmpty = true;
         else {
           try {
+                const trashKeyCheck = `trash_${email}`;
+                const trashRawCheck = localStorage.getItem(trashKeyCheck);
+                if (trashRawCheck && trashRawCheck.length > 2) {
+                  console.log('🔧 [SESSION] Skipping IndexedDB migration because trash is not empty for', email);
+                  return; // Skip migration if trash is not empty
+                }
             const parsed = JSON.parse(vRaw);
             if (Array.isArray(parsed) && parsed.length === 0) isEmpty = true;
             if (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) isEmpty = true;
@@ -135,35 +146,47 @@ export function createSession(
             const { fileStorage } = await import('@/components/pdf/fileStorage');
             const keys = await fileStorage.getAllKeys();
             if (keys && keys.length > 0) {
-              const items: any[] = [];
-              let total = 0;
-              for (const k of keys) {
-                try {
-                  const blob = await fileStorage.getFile(k);
-                  if (!blob) continue;
-                  const name = (blob as any).name || k;
-                  const size = (blob as any).size || 0;
-                  items.push({
-                    id: k,
-                    name,
-                    size,
-                    type: 'file',
-                    createdAt: new Date().toISOString(),
-                    parentFolderId: null,
-                    owner: email,
-                  });
-                  total += size;
-                } catch (e) {
-                  console.warn('session migration: failed reading blob for', k, e);
-                }
-              }
-
-              if (items.length > 0) {
-                localStorage.setItem(vaultKey, JSON.stringify(items));
-                localStorage.setItem(`storage_${email}`, String(total));
-                console.log('🔧 Session migration: rebuilt vault metadata from IndexedDB files for', email, 'files:', items.length);
+              // Safer migration: Only reconstruct vault metadata from IndexedDB
+              // when keys clearly belong to this user. Blind migration risks
+              // exposing other users' files when multiple accounts share the same
+              // browser/profile. We only proceed if at least one key contains
+              // the user's email as a substring (this covers keys created with
+              // explicit owner info). Otherwise we skip and log guidance.
+              const ownerLike = keys.filter(k => k.includes(email));
+              if (ownerLike.length === 0) {
+                console.warn('⚠️ [SESSION] IndexedDB contains blobs but none appear to belong to', email, '- skipping automatic migration to avoid cross-account leakage.');
+                console.debug('⚠️ [SESSION] Found keys:', keys.slice(0, 10));
               } else {
-                console.debug('session migration: no blobs found to rebuild vault for', email);
+                const items: any[] = [];
+                let total = 0;
+                for (const k of ownerLike) {
+                  try {
+                    const blob = await fileStorage.getFile(k);
+                    if (!blob) continue;
+                    const name = (blob as any).name || k;
+                    const size = (blob as any).size || 0;
+                    items.push({
+                      id: k,
+                      name,
+                      size,
+                      type: 'file',
+                      createdAt: new Date().toISOString(),
+                      parentFolderId: null,
+                      owner: email,
+                    });
+                    total += size;
+                  } catch (e) {
+                    console.warn('session migration: failed reading blob for', k, e);
+                  }
+                }
+
+                if (items.length > 0) {
+                  localStorage.setItem(vaultKey, JSON.stringify(items));
+                  localStorage.setItem(`storage_${email}`, String(total));
+                  console.log('🔧 Session migration: rebuilt vault metadata from IndexedDB files for', email, 'files:', items.length);
+                } else {
+                  console.debug('session migration: no owner-matching blobs found to rebuild vault for', email);
+                }
               }
             }
           } catch (e) {
@@ -182,14 +205,18 @@ export function createSession(
 export function getSession(): Session | null {
   if (typeof window === 'undefined') return null;
 
+  // Try both storage locations
   const sessionData =
-    sessionStorage.getItem('session') || localStorage.getItem('session');
+    localStorage.getItem(SESSION_KEY) ||
+    sessionStorage.getItem('session') || 
+    localStorage.getItem('session');
   if (!sessionData) return null;
 
   try {
     const session = JSON.parse(sessionData) as Session;
 
-    if (Date.now() > session.expiresAt) {
+    // Check expiration if expiresAt exists
+    if (session.expiresAt && Date.now() > session.expiresAt) {
       clearSession();
       return null;
     }
@@ -197,6 +224,34 @@ export function getSession(): Session | null {
     return session;
   } catch {
     return null;
+  }
+}
+
+export function updateSession(userEmail: string, firstName: string, lastName: string): void {
+  const existingSession = getSession();
+  const now = Date.now();
+  
+  const session: Session = {
+    userEmail,
+    firstName,
+    lastName,
+    sessionToken: existingSession?.sessionToken || 
+      Math.random().toString(36).substr(2) +
+      Math.random().toString(36).substr(2),
+    createdAt: existingSession?.createdAt || now,
+    expiresAt: existingSession?.expiresAt || now + SESSION_DURATION,
+  };
+  
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+    
+    // Update in other location if it exists there
+    if (sessionStorage.getItem('session')) {
+      sessionStorage.setItem('session', JSON.stringify(session));
+    }
+    if (localStorage.getItem('session')) {
+      localStorage.setItem('session', JSON.stringify(session));
+    }
   }
 }
 
@@ -210,7 +265,10 @@ export function clearSession(): void {
     try {
       // Before removing the session, back up any vault-related keys so
       // they can be restored if something accidentally wipes them.
-      const sessionData = sessionStorage.getItem('session') || localStorage.getItem('session');
+      const sessionData = 
+        localStorage.getItem(SESSION_KEY) ||
+        sessionStorage.getItem('session') || 
+        localStorage.getItem('session');
       if (sessionData) {
         try {
           const ses = JSON.parse(sessionData) as Session;
@@ -223,7 +281,14 @@ export function clearSession(): void {
             const key = localStorage.key(i);
             if (!key) continue;
             if (prefixes.some((p) => key.startsWith(p))) {
-              backup[key] = localStorage.getItem(key);
+              const val = localStorage.getItem(key);
+              backup[key] = val;
+              try {
+                const len = val ? val.length : 0;
+                console.log(`🔒 [BACKUP] Key: ${key} len:${len}`);
+              } catch (e) {
+                console.log('🔒 [BACKUP] Key:', key);
+              }
             }
           }
 
@@ -237,6 +302,7 @@ export function clearSession(): void {
       }
 
       // Only remove session-related keys; leave vault data untouched.
+      localStorage.removeItem(SESSION_KEY);
       localStorage.removeItem('session');
       sessionStorage.removeItem('session');
       localStorage.removeItem('rememberMe');
@@ -248,5 +314,16 @@ export function clearSession(): void {
 }
 
 export function isSessionValid(): boolean {
-  return getSession() !== null;
+  const session = getSession();
+  if (!session) return false;
+  
+  // If expiresAt exists, use it
+  if (session.expiresAt) {
+    return Date.now() < session.expiresAt;
+  }
+  
+  // Fallback to checking age if only createdAt exists
+  const now = Date.now();
+  const sessionAge = now - session.createdAt;
+  return sessionAge < SESSION_DURATION;
 }

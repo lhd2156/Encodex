@@ -286,11 +286,19 @@ export default function SearchBar({ files, onSelectFile, onOpenFolder }: SearchB
                     </div>
                     
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      {(file as any).isReceivedShare && (
-                        <span className="text-base" title="Shared with you">📎</span>
-                      )}
-                      {file.isFavorite && (
-                        <span className="text-base" title="Favorite">❤️</span>
+                      {/* If file is favorited, render favorite at far right and paperclip to its left */}
+                      {file.isFavorite ? (
+                        <>
+                          {(file as any).isReceivedShare || (file as any).sharedWith?.length > 0 ? (
+                            <span className="text-base" title="Shared">📎</span>
+                          ) : null}
+                          <span className="text-base" title="Favorite">❤️</span>
+                        </>
+                      ) : (
+                        /* Not favorited: paperclip sits at far right when present */
+                        ((file as any).isReceivedShare || (file as any).sharedWith?.length > 0) && (
+                          <span className="text-base" title="Shared">📎</span>
+                        )
                       )}
                     </div>
                   </button>
