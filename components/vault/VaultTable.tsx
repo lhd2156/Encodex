@@ -12,6 +12,7 @@ interface FileItem {
   isFavorite?: boolean;
   owner?: string;
   ownerName?: string;
+  uploaderName?: string; // Live display name of uploader (when different from owner)
   isReceivedShare?: boolean;
 }
 
@@ -48,6 +49,9 @@ interface VaultTableProps {
   sortOrder: 'asc' | 'desc' | null;
   onSortChange: (column: 'name' | 'modified') => void;
   allFiles?: FileItem[];
+  currentUserEmail?: string;  // Current user's email for owner display
+  currentUserName?: string;   // Current user's name for owner display
+  currentUserProfileImage?: string | null; // Current user's profile image
 }
 
 export default function VaultTable({
@@ -83,6 +87,9 @@ export default function VaultTable({
   sortOrder,
   onSortChange,
   allFiles,
+  currentUserEmail,
+  currentUserName,
+  currentUserProfileImage,
 }: VaultTableProps) {
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
   const [dragOverId, setDragOverId] = React.useState<string | null>(null);
@@ -271,14 +278,17 @@ export default function VaultTable({
                 />
                 {/* Spacer to push paperclip to the right, closer to paper icon */}
                 <div className="flex-1" />
-                {/* ✅ FIX: Paperclip indicator - show for BOTH received shares AND files you've shared */}
+                {/* ✅ FIX: Paperclip indicator - show for ALL shared items including trash tombstones */}
                 <span className="flex-shrink-0 w-[16px] flex items-center justify-center leading-none">
-                  {((item as any).isReceivedShare || (item as any).sharedWith?.length > 0) && (
+                  {((item as any).isReceivedShare || 
+                    (item as any).isSharedFile || 
+                    (item as any).sharedMeta ||
+                    (item as any).sharedWith?.length > 0) && (
                     <span 
                       className="text-sm opacity-70 cursor-help"
                       title={
-                        (item as any).isReceivedShare 
-                          ? `Shared by ${(item as any).ownerName || (item as any).owner}`
+                        (item as any).isReceivedShare || (item as any).isSharedFile || (item as any).sharedMeta
+                          ? `Shared by ${(item as any).sharedMeta?.ownerId || (item as any).ownerName || (item as any).owner || 'someone'}`
                           : `Shared with: ${(item as any).sharedWith?.join(', ')}`
                       }
                     >
@@ -324,25 +334,68 @@ export default function VaultTable({
                 </div>
               </div>
 
-              {/* ✅ FIX: Owner - shows actual owner for shared files */}
+              {/* ✅ FIX: Owner display with uploader info for shared folders */}
               <div className="col-span-2 flex items-center min-w-0 h-full">
                 <div className="flex items-center gap-2 min-w-0">
-                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                  </svg>
+                  {(() => {
+                    // ✅ FIX: Always show user icon, never profile pic in owner column
+                    return (
+                      <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                      </svg>
+                    );
+                  })()}
                   <span className="text-xs text-gray-400 truncate leading-tight">
                     {(() => {
-                      if ((item as any).isReceivedShare) {
-                        if ((item as any).ownerName && (item as any).owner) {
-                          // ✅ FIX: only show "Name (email)" when name ≠ email
-                          if ((item as any).ownerName !== (item as any).owner) {
-                            return `${(item as any).ownerName} (${(item as any).owner})`;
-                          }
-                          return (item as any).owner;
+                      const itemOwner = (item as any).owner || (item as any).ownerEmail;
+                      const uploaderEmail = (item as any).ownerName; // ownerName stores uploader's EMAIL when different from owner
+                      const uploaderName = (item as any).uploaderName; // ✅ NEW: Live display name of uploader
+                      const sharedMeta = (item as any).sharedMeta; // For trash tombstones of shared items
+                      
+                      // RULE 0 (TRASH): If it has sharedMeta, it's a trashed received share - show original owner
+                      if (sharedMeta && sharedMeta.ownerId) {
+                        // This is a trashed shared item - show who shared it
+                        if (currentUserEmail && sharedMeta.ownerId.toLowerCase() === currentUserEmail.toLowerCase()) {
+                          return 'me'; // I was the original owner
                         }
-                        if ((item as any).ownerName) return (item as any).ownerName;
-                        if ((item as any).owner) return (item as any).owner;
+                        if (sharedMeta.ownerName && sharedMeta.ownerName !== sharedMeta.ownerId) {
+                          return sharedMeta.ownerName;
+                        }
+                        return sharedMeta.ownerId;
                       }
+                      
+                      // RULE 1: If it's a received share, show who shared it (the folder owner)
+                      if ((item as any).isReceivedShare) {
+                        // Check if I uploaded this to someone else's shared folder
+                        if (uploaderEmail && currentUserEmail && uploaderEmail.toLowerCase() === currentUserEmail.toLowerCase()) {
+                          return 'me'; // I uploaded it, show "me"
+                        }
+                        // Show sender's live name (sharedByName comes from User table join)
+                        const sharerName = (item as any).sharedByName;
+                        if (sharerName) {
+                          return sharerName;
+                        }
+                        return (item as any).sharedBy || itemOwner || 'Unknown';
+                      }
+                      
+                      // RULE 2: It's MY file (I own it) - but check if someone else uploaded it
+                      if (itemOwner && currentUserEmail && itemOwner.toLowerCase() === currentUserEmail.toLowerCase()) {
+                        // I own this file - but did someone else upload it to my shared folder?
+                        if (uploaderEmail && uploaderEmail.toLowerCase() !== currentUserEmail.toLowerCase()) {
+                          // Someone else uploaded to my shared folder - show their LIVE name if available
+                          if (uploaderName) {
+                            return uploaderName;
+                          }
+                          return uploaderEmail; // Fallback to email
+                        }
+                        return 'me'; // I uploaded it myself
+                      }
+                      
+                      // RULE 3 (FALLBACK): Owner doesn't match current user
+                      if (itemOwner && currentUserEmail && itemOwner.toLowerCase() !== currentUserEmail.toLowerCase()) {
+                        return itemOwner;
+                      }
+                      
                       return 'me';
                     })()}
                   </span>

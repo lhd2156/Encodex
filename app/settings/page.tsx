@@ -37,14 +37,76 @@ export default function SettingsPage() {
 
     const session = getSession();
     if (session) {
-      setUserEmail(session.userEmail);
-      setFirstName(session.firstName);
-      setLastName(session.lastName || '');
-      setNewEmail(session.userEmail);
+      // ✅ CRITICAL: Auth token is in sessionStorage (tab-specific!)
+      const authToken = sessionStorage.getItem('auth_token');
+      
+      // Get email from token (tab-specific, accurate)
+      let finalEmail = session.userEmail.toLowerCase();
+      
+      if (authToken) {
+        try {
+          const payload = JSON.parse(atob(authToken.split('.')[1]));
+          if (payload.email) {
+            finalEmail = payload.email.toLowerCase();
+          }
+        } catch (e) {
+          console.error('Failed to decode token:', e);
+        }
+      }
+      
+      setUserEmail(finalEmail);
+      setNewEmail(finalEmail);
+      
+      // ✅ FIX: Fetch user's ACTUAL name from database (not shared localStorage!)
+      const fetchProfile = async () => {
+        if (!authToken) {
+          // Fallback to session
+          setFirstName(session.firstName);
+          setLastName(session.lastName || '');
+          return;
+        }
+        
+        try {
+          const response = await fetch('/api/auth/profile', {
+            headers: {
+              'Authorization': `Bearer ${authToken}`,
+            },
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.user) {
+              console.log('📋 [SETTINGS] Profile from DB:', data.user.firstName, data.user.lastName);
+              setFirstName(data.user.firstName);
+              setLastName(data.user.lastName || '');
+              return;
+            }
+          }
+        } catch (e) {
+          console.error('📋 [SETTINGS] Failed to fetch profile from API:', e);
+        }
+        
+        // Fallback to session
+        setFirstName(session.firstName);
+        setLastName(session.lastName || '');
+      };
+      
+      fetchProfile();
 
-      // Load profile image if exists
-      const savedImage = localStorage.getItem(`profile_image_${session.userEmail}`);
-      if (savedImage) {
+      // Load profile image if exists (always use lowercase key)
+      const savedImage = localStorage.getItem(`profile_image_${finalEmail}`);
+      
+      // Fallback: try original casing (for backwards compatibility)
+      if (!savedImage) {
+        const oldImage = localStorage.getItem(`profile_image_${session.userEmail}`);
+        if (oldImage) {
+          // Migrate to normalized key
+          localStorage.setItem(`profile_image_${finalEmail}`, oldImage);
+          localStorage.removeItem(`profile_image_${session.userEmail}`);
+          setProfileImage(oldImage);
+          console.log('🔄 Migrated profile image to normalized email key');
+        }
+      } else {
         setProfileImage(savedImage);
       }
     }
@@ -84,12 +146,13 @@ export default function SettingsPage() {
     showSuccess('Profile image removed!');
   };
 
-  const handleSaveProfile = () => {
+  const handleSaveProfile = async () => {
     if (!firstName.trim()) {
       setErrorMessage('First name is required');
       return;
     }
 
+    // ✅ FIX: Update userAccounts if it exists (legacy support)
     const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
     const accountIndex = accounts.findIndex((acc: any) => acc.email === userEmail);
 
@@ -97,9 +160,67 @@ export default function SettingsPage() {
       accounts[accountIndex].firstName = firstName;
       accounts[accountIndex].lastName = lastName;
       localStorage.setItem('userAccounts', JSON.stringify(accounts));
-      updateSession(userEmail, firstName, lastName);
-      showSuccess('Profile updated successfully!');
     }
+    
+    // ✅ FIX: ALWAYS update session - this is the main source of truth
+    updateSession(userEmail, firstName, lastName);
+    
+    // ✅ FIX: ALWAYS update the 'user' object used by the API system
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      try {
+        const user = JSON.parse(storedUser);
+        user.firstName = firstName;
+        user.lastName = lastName;
+        localStorage.setItem('user', JSON.stringify(user));
+      } catch (e) {
+        console.error('Failed to update user object:', e);
+      }
+    } else {
+      // Create the user object if it doesn't exist
+      localStorage.setItem('user', JSON.stringify({
+        email: userEmail,
+        firstName: firstName,
+        lastName: lastName
+      }));
+    }
+    
+    // ✅ FIX: Update name in database so shared files show correct owner name
+    const authToken = sessionStorage.getItem('auth_token');
+    if (authToken) {
+      try {
+        console.log(`📤 [SETTINGS] Calling /api/auth/profile with firstName="${firstName}", lastName="${lastName}"`);
+        const response = await fetch('/api/auth/profile', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ firstName, lastName }),
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+          console.log(`✅ [SETTINGS] Profile updated in database! User: ${result.user?.firstName} ${result.user?.lastName}, Files updated: ${result.filesUpdated}`);
+        } else {
+          console.error('❌ [SETTINGS] Failed to update profile in database:', result.error || response.statusText);
+          setErrorMessage(`Failed to save to server: ${result.error || 'Unknown error'}`);
+          return;
+        }
+      } catch (e) {
+        console.error('❌ [SETTINGS] Error updating profile in database:', e);
+        setErrorMessage('Network error while saving profile');
+        return;
+      }
+    } else {
+      console.warn('⚠️ [SETTINGS] No auth token found, profile not saved to database');
+    }
+    
+    // Dispatch event to notify other components (vault page)
+    window.dispatchEvent(new Event('profileUpdated'));
+    
+    showSuccess('Profile updated successfully!');
   };
 
   const handleChangeEmail = () => {
@@ -174,11 +295,24 @@ export default function SettingsPage() {
   };
 
   const handleShowRecoveryKey = () => {
-    const keyStorageKey = `recovery_key_${userEmail}`;
-    const key = localStorage.getItem(keyStorageKey) || '';
+    // ✅ FIX: Use normalized (lowercase) email for lookup
+    const normalizedEmail = userEmail.toLowerCase();
+    let key = localStorage.getItem(`recovery_key_${normalizedEmail}`);
+    
+    // Fallback: try original casing (for backwards compatibility)
+    if (!key) {
+      key = localStorage.getItem(`recovery_key_${userEmail}`);
+      
+      // If found, migrate to normalized key
+      if (key) {
+        localStorage.setItem(`recovery_key_${normalizedEmail}`, key);
+        localStorage.removeItem(`recovery_key_${userEmail}`);
+        console.log('🔄 Migrated recovery key to normalized email');
+      }
+    }
 
     if (!key) {
-      setErrorMessage('No recovery key found');
+      setErrorMessage('No recovery key found. This may happen if you registered on a different browser.');
       return;
     }
 

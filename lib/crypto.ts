@@ -149,7 +149,7 @@ export async function unwrapFileKey(
 
 /* ========= File Decryption ========= */
 
-export async function decryptFile(
+export async function decryptFileData(
   encryptedData: ArrayBuffer,
   fileKey: CryptoKey,
   iv: Uint8Array,

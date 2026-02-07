@@ -2,11 +2,25 @@
 
 import React, { useState } from 'react';
 
+// Helper to format email display: capitalize first letter only if not a number
+const formatEmailDisplay = (email: string): string => {
+  if (!email) return '';
+  const [localPart, domain] = email.split('@');
+  if (!localPart || !domain) return email.toLowerCase();
+  const firstChar = localPart.charAt(0);
+  const isNumber = /\d/.test(firstChar);
+  const formattedLocal = isNumber
+    ? localPart.toLowerCase()
+    : firstChar.toUpperCase() + localPart.slice(1).toLowerCase();
+  return `${formattedLocal}@${domain.toLowerCase()}`;
+};
+
 type ShareModalProps = {
   isOpen: boolean;
   onClose: () => void;
   currentUserName: string;
   currentUserEmail: string;
+  currentUserProfileImage?: string | null; // ✅ Add profile image support
   fileName: string;
   fileId?: string | null;
   currentSharedWith?: string[];
@@ -19,6 +33,7 @@ export default function ShareModal({
   onClose,
   currentUserName,
   currentUserEmail,
+  currentUserProfileImage,
   fileName,
   fileId,
   currentSharedWith,
@@ -28,6 +43,7 @@ export default function ShareModal({
   const [recipientEmail, setRecipientEmail] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [isUnshareSuccess, setIsUnshareSuccess] = useState(false); // Track if this was an unshare action
 
   if (!isOpen) return null;
 
@@ -50,8 +66,17 @@ export default function ShareModal({
       return;
     }
 
+    // ✅ FIX: Check if already shared BEFORE making API call
+    const normalizedInput = recipientEmail.toLowerCase().trim();
+    if (currentSharedWith && currentSharedWith.some(email => email.toLowerCase() === normalizedInput)) {
+      setError('Already shared with this user. Use Unshare to remove access.');
+      return;
+    }
+
     (async () => {
-      const result = await onShare(recipientEmail);
+      // Normalize email to lowercase for case-insensitive matching
+      const normalizedEmail = recipientEmail.toLowerCase().trim();
+      const result = await onShare(normalizedEmail);
 
       if (result) {
         setSuccess(true);
@@ -61,7 +86,7 @@ export default function ShareModal({
           handleClose();
         }, 2000);
       } else {
-        setError('Failed to share file. It may already be shared with this user.');
+        setError('Failed to share file. Please try again.');
       }
     })();
   };
@@ -70,6 +95,7 @@ export default function ShareModal({
     setRecipientEmail('');
     setError('');
     setSuccess(false);
+    setIsUnshareSuccess(false);
     onClose();
   };
 
@@ -90,12 +116,20 @@ export default function ShareModal({
         <div className="mb-6 p-4 bg-blue-800/20 rounded-lg border border-blue-700/30">
           <p className="text-sm text-gray-400 mb-2">People with access</p>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg">
-              {currentUserName.charAt(0).toUpperCase()}
-            </div>
+            {currentUserProfileImage ? (
+              <img
+                src={currentUserProfileImage}
+                alt="Profile"
+                className="w-10 h-10 rounded-full object-cover"
+              />
+            ) : (
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg">
+                {currentUserName.charAt(0).toUpperCase()}
+              </div>
+            )}
             <div className="flex-1">
               <p className="text-white font-semibold">{currentUserName} (you)</p>
-              <p className="text-sm text-gray-400">{currentUserEmail}</p>
+              <p className="text-sm text-gray-400">{formatEmailDisplay(currentUserEmail)}</p>
             </div>
             <span className="text-sm text-gray-400 bg-blue-900/40 px-3 py-1 rounded-full">Owner</span>
           </div>
@@ -117,15 +151,20 @@ export default function ShareModal({
 
         {/* Success Message */}
         {success && (
-          <div className="mb-6 p-4 bg-teal-500/20 rounded-lg border border-teal-400/50 animate-fade-in">
+          <div className={`mb-6 p-4 ${isUnshareSuccess ? 'bg-orange-500/20 border-orange-400/50' : 'bg-teal-500/20 border-teal-400/50'} rounded-lg border animate-fade-in`}>
             <div className="flex items-center gap-3">
-              <svg className="w-6 h-6 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`w-6 h-6 ${isUnshareSuccess ? 'text-orange-400' : 'text-teal-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
-              <p className="text-teal-400 font-semibold">File shared successfully!</p>
+              <p className={`${isUnshareSuccess ? 'text-orange-400' : 'text-teal-400'} font-semibold`}>
+                {isUnshareSuccess ? 'File unshared successfully!' : 'File shared successfully!'}
+              </p>
             </div>
             <p className="text-sm text-gray-300 mt-2 ml-9">
-              {recipientEmail} can now access this file in their "Shared" section.
+              {isUnshareSuccess 
+                ? `${recipientEmail} can no longer access this file.`
+                : `${recipientEmail} can now access this file in their "Shared" section.`
+              }
             </p>
           </div>
         )}
@@ -179,13 +218,17 @@ export default function ShareModal({
             <button
               onClick={async () => {
                 if (!onUnshare) return;
-                if (!recipientEmail || !currentSharedWith.includes(recipientEmail)) {
+                // Normalize for case-insensitive comparison
+                const normalizedInput = recipientEmail.toLowerCase().trim();
+                const normalizedSharedWith = currentSharedWith.map(e => e.toLowerCase());
+                if (!recipientEmail || !normalizedSharedWith.includes(normalizedInput)) {
                   setError('Enter an email that this file is currently shared with to unshare');
                   return;
                 }
                 setError('');
-                const result = await onUnshare(recipientEmail);
+                const result = await onUnshare(normalizedInput);
                 if (result) {
+                  setIsUnshareSuccess(true);
                   setSuccess(true);
                   setTimeout(() => handleClose(), 1200);
                 } else {

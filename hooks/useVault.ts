@@ -3,6 +3,55 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fileStorage } from '@/components/pdf/fileStorage';
 import { sharedFilesManager, SHARED_FILES_EVENT, SHARED_FILES_SYNC_TRIGGER, SHARED_FILES_KEY } from '@/lib/sharedFilesManager';
+import { decryptFileData, unwrapFileKey } from '@/lib/crypto';
+
+// ========== API INTEGRATION (ADDED - keeps all localStorage logic intact) ==========
+const getAuthToken = () => typeof window !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
+const apiCall = async (endpoint: string, options: RequestInit = {}) => {
+  const token = getAuthToken();
+  if (!token) throw new Error('No auth token');
+  
+  try {
+    const response = await fetch(endpoint, {
+      ...options,
+      headers: { 
+        'Content-Type': 'application/json', 
+        'Authorization': `Bearer ${token}`, 
+        ...options.headers 
+      },
+    });
+    
+    if (!response.ok) {
+      let errorMsg = `HTTP ${response.status}`;
+      try {
+        const error = await response.json();
+        errorMsg = error.error || error.message || errorMsg;
+      } catch {
+        // Response body is not JSON, use HTTP status
+      }
+      throw new Error(errorMsg);
+    }
+    
+    try {
+      return await response.json();
+    } catch (parseError) {
+      console.error('Failed to parse JSON response:', parseError, 'from endpoint:', endpoint);
+      return { success: false };
+    }
+  } catch (error) {
+    console.error('API call failed:', { endpoint, error });
+    throw error;
+  }
+};
+const API = {
+  fetchFiles: () => apiCall('/api/files'),
+  uploadFile: (data: any) => apiCall('/api/files/upload', { method: 'POST', body: JSON.stringify(data) }),
+  deleteFile: (id: string) => apiCall(`/api/files/${id}`, { method: 'DELETE' }),
+  updateFile: (id: string, data: any) => apiCall(`/api/files/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  fetchShares: () => apiCall('/api/shares'),
+  createShare: (data: any) => apiCall('/api/shares', { method: 'POST', body: JSON.stringify(data) }),
+};
+// ========== END API INTEGRATION ==========
 
 export interface FileItem {
   id: string;
@@ -17,8 +66,10 @@ export interface FileItem {
   sharedByName?: string;
   owner?: string;
   ownerName?: string;
+  uploaderName?: string; // ✅ NEW: Live display name of uploader (when different from owner)
   isSharedFile?: boolean;
   isReceivedShare?: boolean;
+  insideSharedFolder?: boolean; // ✅ NEW: Set when file is uploaded to someone else's shared folder
   sharedWith?: string[]; // List of emails this file is shared with
 }
 
@@ -30,7 +81,16 @@ export interface UploadProgress {
 
 export type TabType = 'vault' | 'shared' | 'favorites' | 'recent' | 'trash';
 
-export function useVault(userEmail: string, userName?: string) {
+// Helper for case-insensitive email comparison
+const emailsMatch = (a?: string | null, b?: string | null): boolean => {
+  if (!a || !b) return false;
+  return a.toLowerCase() === b.toLowerCase();
+};
+
+export function useVault(userEmail: string, userName?: string, masterKey?: CryptoKey) {
+  // Get auth token for API calls
+  const authToken = getAuthToken();
+
   const [files, setFiles] = useState<FileItem[]>([]);
   const [deletedFiles, setDeletedFiles] = useState<FileItem[]>([]);
   const [storageUsed, setStorageUsed] = useState(0);
@@ -48,25 +108,31 @@ export function useVault(userEmail: string, userName?: string) {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc' | null>(null);
 
   const hasLoaded = useRef(false);
+  const isSyncing = useRef(false); // ✅ CRITICAL FIX: Prevent concurrent syncs
+  const syncDebounceTimer = useRef<NodeJS.Timeout | null>(null); // ✅ Debounce rapid sync calls
+  const deletedFilesRef = useRef<FileItem[]>([]); // ✅ FIX: Ref to avoid dependency loop
+  const pendingFavoritesRef = useRef<Set<string>>(new Set()); // ✅ FIX: Track files with pending favorite toggle
+  const [sharedFilesCount, setSharedFilesCount] = useState(0); // ✅ FIX: State-based count instead of async function
+
 
   const devLog = (...args: any[]) => {
     try {
-      const stamp = `${new Date().toISOString()} @${(performance && performance.now ? performance.now() : Date.now()).toFixed ? (performance.now()).toFixed(2) : Date.now()}`;
+      const stamp = `${new Date().toISOString()} @${(performance && performance.now ? performance.now() : Date.now()).toFixed(2)}`;
       console.debug('[DEV]', stamp, ...args);
     } catch (e) {
       console.debug('[DEV]', new Date().toISOString(), ...args);
     }
   };
 
-  // ─── HELPER: Check if a shared folder is in sender's trash ────────────────
-  const isSenderFolderInTrash = useCallback((folderId: string, ownerEmail: string): boolean => {
+// ─── HELPER: Check if a shared folder is in sender's trash ────────────────
+  const isSenderFolderInTrash = useCallback(async (folderId: string, ownerEmail: string): Promise<boolean> => {
     try {
-      const senderTrashKey = `trash_${ownerEmail}`;
-      const senderTrashData = localStorage.getItem(senderTrashKey);
+      // Call API to get sender's trash
+      const response = await apiCall(`/api/trash?owner=${encodeURIComponent(ownerEmail)}`);
       
-      if (!senderTrashData) return false;
+      if (!response.success || !response.data) return false;
       
-      const senderTrash = JSON.parse(senderTrashData);
+      const senderTrash = response.data;
       const isInTrash = senderTrash.some((item: any) => item.id === folderId);
       
       console.log(`🗑️ [TRASH_CHECK] Folder ${folderId} in sender's (${ownerEmail}) trash: ${isInTrash}`);
@@ -78,12 +144,12 @@ export function useVault(userEmail: string, userName?: string) {
   }, []);
 
   // ─── HELPER: Check if item should be visible based on folder parent trash status ─────
-  const shouldShowSharedItem = useCallback((
+  const shouldShowSharedItem = useCallback(async (
     item: any, 
     tempDeletedList: string[], 
     ownerEmail: string,
-    receiverTrashedList: string[] = []   // ← NEW: receiver's own trashed-share IDs
-  ): boolean => {
+    receiverTrashedList: string[] = []   // ← receiver's own trashed-share IDs
+  ): Promise<boolean> => {
     console.log(`\n🔍 [VISIBILITY] Checking "${item.fileName}" (ID: ${item.fileId})`);
     console.log(`   Type: ${item.fileType}, Parent: ${item.parentFolderId || 'ROOT'}`);
     console.log(`   tempDeleted(${tempDeletedList.length}), receiverTrashed(${receiverTrashedList.length})`);
@@ -94,10 +160,13 @@ export function useVault(userEmail: string, userName?: string) {
       return false;
     }
 
-    // ── NEW: receiver already trashed this exact item (NOT checking parent - that's handled later) ──
+    // ✅ FIX: DON'T block receiver-trashed items here!
+    // They need to pass through so they can be sorted into sharesToAddToTrash
+    // and become proper tombstones in deletedFiles for the trash view.
+    // The sorting happens later in the sync after visibility checks.
     if (receiverTrashedList.includes(item.fileId)) {
-      console.log(`   ❌ [VISIBILITY] Item itself is in receiver_trashed_shares — blocked at visibility gate`);
-      return false;
+      console.log(`   📦 [VISIBILITY] Item is in receiver's trash - ALLOWING through for trash processing`);
+      return true; // Changed from return false - let it through!
     }
 
     // If item is at root level, parent checks below are N/A
@@ -106,11 +175,8 @@ export function useVault(userEmail: string, userName?: string) {
       return true;
     }
 
-    // ✅ REMOVED: parent folder receiver trash check - let sharesToAddToTrash logic handle it
-    // This allows items with trashed parents to pass through so they can be properly sorted
-
     // Check if parent folder is in sender's trash
-    const parentInSenderTrash = isSenderFolderInTrash(item.parentFolderId, ownerEmail);
+    const parentInSenderTrash = await isSenderFolderInTrash(item.parentFolderId, ownerEmail);
     if (parentInSenderTrash) {
       console.log(`   ❌ Parent folder ${item.parentFolderId} is in sender's trash`);
       return false;
@@ -126,63 +192,169 @@ export function useVault(userEmail: string, userName?: string) {
     return true;
   }, [isSenderFolderInTrash]);
 
-  // ─── shared-files sync ──────────────────────────────────────────────
-  const syncSharedFiles = useCallback(() => {
-    console.log('\n🔄 [SYNC] ================== STARTING SYNC ==================');
-    console.log('🔄 [SYNC] User:', userEmail);
-    const sharedWithMe = sharedFilesManager.getSharedWithMe(userEmail);
-    const sharedByMe = sharedFilesManager.getSharedByMe(userEmail);
+  // TOP TWO DONE
+
+  const syncSharedFiles = useCallback(async () => {
+    // ✅ CRITICAL: Prevent concurrent syncs (fixes API spam)
+    if (isSyncing.current) {
+      console.log('🔄 [SYNC] Already syncing, skipping...');
+      return;
+    }
+    
+    // ✅ FIX: Guard against missing token (e.g., fresh registration before token is set)
+    const token = typeof window !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
+    if (!token || !userEmail) {
+      console.log('🔄 [SYNC] No token or userEmail, skipping sync...');
+      return;
+    }
+    
+    isSyncing.current = true;
+    
+    try {
+    console.log('🔄 [SYNC] Starting sync for:', userEmail);
+    
+    // ✅ STEP 1: Fetch all data from API upfront
+    const sharesResponse = await apiCall('/api/shares');
+    const allShares = sharesResponse.data || [];
+    
+    const sharedWithMe = allShares.filter((share: any) => 
+      emailsMatch(share.recipientEmail, userEmail)
+    );
+    const sharedByMe = allShares.filter((share: any) => 
+      emailsMatch(share.file.ownerEmail, userEmail)
+    );
+    
     console.log('📥 [SYNC] Shared with me:', sharedWithMe.length, 'files');
     console.log('📤 [SYNC] Shared by me:', sharedByMe.length, 'files');
 
-    // Get receiver's permanently hidden shares
-    const hiddenKey = `hidden_shares_${userEmail}`;
-    const hiddenData = localStorage.getItem(hiddenKey);
-    const hiddenList: string[] = hiddenData ? JSON.parse(hiddenData) : [];
+    const hiddenResponse = await apiCall('/api/shares/hidden');
+    const hiddenList: string[] = (hiddenResponse.data || []).map((h: any) => h.fileId);
     console.log('🚫 [SYNC] Hidden shares:', hiddenList);
 
-    // Get receiver's temporarily-hidden shares (owner moved to trash)
-    const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-    const tempDeletedData = localStorage.getItem(tempDeletedKey);
-    const tempDeletedList: string[] = tempDeletedData ? JSON.parse(tempDeletedData) : [];
+    const tempDeletedResponse = await apiCall('/api/shares/temp-deleted');
+    let tempDeletedList: string[] = (tempDeletedResponse.data || []).map((t: any) => t.fileId);
     console.log('⏳ [SYNC] Temporarily deleted shares:', tempDeletedList);
-    console.log('⏳ [SYNC] Raw temp_deleted data:', tempDeletedData);
 
-    // Get receiver's trashed shares (moved to trash but share still intact)
-    const receiverTrashedKey = `receiver_trashed_shares_${userEmail}`;
-    const receiverTrashedData = localStorage.getItem(receiverTrashedKey);
-    const receiverTrashedList: string[] = receiverTrashedData ? JSON.parse(receiverTrashedData) : [];
+    // ✅ FIX: Validate tempDeletedList - clean up stale TempDeletedShare records
+    // These can become stale if the sender restored files but didn't sync
+    if (tempDeletedList.length > 0 && sharedWithMe.length > 0) {
+      const staleFileIds: string[] = [];
+      
+      // Group shared files by owner to minimize API calls
+      const filesByOwner = new Map<string, string[]>();
+      for (const share of sharedWithMe) {
+        const ownerEmail = share.file.ownerEmail;
+        if (tempDeletedList.includes(share.fileId)) {
+          if (!filesByOwner.has(ownerEmail)) {
+            filesByOwner.set(ownerEmail, []);
+          }
+          filesByOwner.get(ownerEmail)!.push(share.fileId);
+        }
+      }
+      
+      // Check each owner's trash to verify files are actually trashed
+      for (const [ownerEmail, fileIds] of filesByOwner) {
+        try {
+          const ownerTrashResponse = await apiCall(`/api/trash?owner=${encodeURIComponent(ownerEmail)}`);
+          const ownerTrashIds = new Set((ownerTrashResponse.data || []).map((f: any) => f.id));
+          
+          for (const fileId of fileIds) {
+            if (!ownerTrashIds.has(fileId)) {
+              console.log(`🧹 [SYNC] Stale temp_deleted: ${fileId} not in ${ownerEmail}'s trash`);
+              staleFileIds.push(fileId);
+            }
+          }
+        } catch (e) {
+          console.error(`❌ [SYNC] Failed to check ${ownerEmail}'s trash:`, e);
+        }
+      }
+      
+      // Clean up stale records
+      if (staleFileIds.length > 0) {
+        try {
+          await apiCall('/api/shares/temp-deleted', {
+            method: 'POST',
+            body: JSON.stringify({
+              fileIds: staleFileIds,
+              recipientEmails: [userEmail],
+              isTrashed: false // Remove these stale records
+            })
+          });
+          console.log(`🧹 [SYNC] Cleaned up ${staleFileIds.length} stale temp_deleted record(s)`);
+          // Update the tempDeletedList to exclude cleaned up IDs
+          tempDeletedList = tempDeletedList.filter(id => !staleFileIds.includes(id));
+        } catch (e) {
+          console.error('❌ [SYNC] Failed to clean up stale temp_deleted records:', e);
+        }
+      }
+    }
+
+    const receiverTrashedResponse = await apiCall('/api/shares/trashed');
+    const receiverTrashedList: string[] = (receiverTrashedResponse.data || []).map((t: any) => t.fileId);
     console.log('🗑️ [SYNC] Receiver trashed shares:', receiverTrashedList);
 
-    // ✅ FIX 1: REMOVE items from deletedFiles if sender has trashed them
-    // When sender trashes → item goes into temp_deleted → should DISAPPEAR from receiver's trash
-    // When sender restores → item removed from temp_deleted → should REAPPEAR in receiver's trash
+    // ✅ STEP 2.5: Fetch user's favorites (per-user, not shared between sender/receiver)
+    let userFavoritesList: string[] = [];
+    try {
+      const favoritesResponse = await apiCall('/api/metadata/favorites');
+      userFavoritesList = favoritesResponse.data || [];
+      console.log('⭐ [SYNC] User favorites:', userFavoritesList.length);
+    } catch (e) {
+      console.warn('⚠️ [SYNC] Failed to fetch favorites:', e);
+    }
+
+    // ✅ STEP 3: Fetch sender's trash status
+    const senderTrashResponse = await apiCall('/api/trash');
+    const senderTrash = senderTrashResponse.data || [];
+    
+    // ✅ STEP 3: Pre-fetch all recipient lists for shared files
+    const recipientsByFileId = new Map<string, string[]>();
+    for (const share of sharedByMe) {
+      try {
+        const recipientsResponse = await apiCall('/api/shares/recipients', {
+          method: 'POST',
+          body: JSON.stringify({ fileId: share.fileId })
+        });
+        recipientsByFileId.set(share.fileId, recipientsResponse.recipients || []);
+      } catch (e) {
+        console.error(`Failed to fetch recipients for ${share.fileId}`, e);
+        recipientsByFileId.set(share.fileId, []);
+      }
+    }
+
+    // ✅ STEP 4: Now do synchronous state updates with the fetched data
+    
     setDeletedFiles((prev) => {
       console.log(`\n🗑️ [TRASH-SYNC] === Processing deletedFiles ===`);
       console.log(`   Current trash count: ${prev.length}`);
       console.log(`   Items sender trashed (temp_deleted): ${tempDeletedList.length}`);
       console.log(`   Items receiver trashed (receiver_trashed): ${receiverTrashedList.length}`);
 
-      // Remove items that sender has trashed (temp_deleted)
       const filtered = prev.filter((deletedFile) => {
         if (!deletedFile.isSharedFile) return true;
-
+        
+        // ✅ CAREFUL: Only remove if tempDeletedList ACTUALLY contains this file
+        // AND the share no longer exists in sharedWithMe (sender revoked or file gone)
         if (tempDeletedList.includes(deletedFile.id)) {
-          console.log(`   🚫 [TRASH-SYNC] REMOVING "${deletedFile.name}" - sender trashed it`);
-          return false;
+          // Double-check: is this share still valid?
+          const shareStillExists = sharedWithMe.some((s: any) => s.fileId === deletedFile.id);
+          if (!shareStillExists) {
+            console.log(`   🚫 [TRASH-SYNC] REMOVING "${deletedFile.name}" - sender trashed it and share gone`);
+            return false;
+          } else {
+            console.log(`   ⚠️ [TRASH-SYNC] Keeping "${deletedFile.name}" - in temp_deleted but share still exists`);
+            // Share still exists - sender might have restored. Keep the tombstone.
+            return true;
+          }
         }
-
         return true;
       });
 
-      // ✅ NEW: RE-ADD items to trash if sender restored them BUT receiver still has them in receiver_trashed_shares
       const existingIds = new Set(filtered.map(d => d.id));
       const toRestore: FileItem[] = [];
       
-      sharedWithMe.forEach(share => {
-        // If receiver has this in their trash list AND sender is NOT trashing it
+      sharedWithMe.forEach((share: any) => {
         if (receiverTrashedList.includes(share.fileId) && !tempDeletedList.includes(share.fileId)) {
-          // And it's not already in trash
           if (!existingIds.has(share.fileId)) {
             console.log(`   ♻️ [TRASH-SYNC] RE-ADDING "${share.fileName}" - sender restored but receiver still trashed it`);
             
@@ -191,25 +363,23 @@ export function useVault(userEmail: string, userName?: string) {
               name: share.fileName,
               size: share.fileSize || 0,
               type: share.fileType,
-              createdAt: new Date(share.originalCreatedAt || Date.now()),
+              createdAt: new Date(share.file.createdAt || Date.now()),
               parentFolderId: share.parentFolderId || null,
-              owner: share.ownerId,
+              owner: share.file.ownerEmail,
               isSharedFile: true,
             } as any;
             
             tombstone.originalSharedId = share.fileId;
-            tombstone.sharedMeta = { ownerId: share.ownerId, ownerName: share.ownerName };
+            tombstone.sharedMeta = { ownerId: share.file.ownerEmail, ownerName: share.file.ownerName };
             
             toRestore.push(tombstone);
           }
         }
       });
 
-      // Apply rename updates to remaining shared items
       const updated = filtered.map((deletedFile) => {
         if (!deletedFile.isSharedFile) return deletedFile;
-
-        const updatedShare = sharedWithMe.find(s => s.fileId === deletedFile.id);
+        const updatedShare = sharedWithMe.find((s: any) => s.fileId === deletedFile.id);
         if (updatedShare && updatedShare.fileName !== deletedFile.name) {
           console.log(`🔄 [TRASH-SYNC] Rename-sync: "${deletedFile.name}" → "${updatedShare.fileName}"`);
           return { ...deletedFile, name: updatedShare.fileName };
@@ -222,8 +392,7 @@ export function useVault(userEmail: string, userName?: string) {
       return final;
     });
 
-    // 🔍 DEBUG: log every share that is being held back because its folder is trashed
-    sharedWithMe.forEach(share => {
+    sharedWithMe.forEach((share: any) => {
       const selfHeld  = receiverTrashedList.includes(share.fileId);
       const parentHeld = share.parentFolderId && receiverTrashedList.includes(share.parentFolderId);
       if (selfHeld || parentHeld) {
@@ -231,11 +400,7 @@ export function useVault(userEmail: string, userName?: string) {
       }
     });
 
-    // Ensure incoming shares that are held because the receiver has trashed
-    // the parent (or the item itself) also appear in the receiver's Trash list
-    // (`deletedFiles`). This makes sender-added files visible in the
-    // receiver's Trash view when appropriate.
-    const sharesHeld = sharedWithMe.filter(share => {
+    const sharesHeld = sharedWithMe.filter((share: any) => {
       return receiverTrashedList.includes(share.fileId) || (share.parentFolderId && receiverTrashedList.includes(share.parentFolderId));
     });
 
@@ -246,7 +411,7 @@ export function useVault(userEmail: string, userName?: string) {
         const existingOrig = new Set(prev.map(d => (d as any).originalSharedId).filter(Boolean));
 
         const toAdd: FileItem[] = [];
-        sharesHeld.forEach(share => {
+        sharesHeld.forEach((share: any) => {
           if (existingIds.has(share.fileId) || existingOrig.has(share.fileId)) {
             console.log(`   ℹ️ [SYNC] Tombstone already exists for ${share.fileId}`);
             return;
@@ -257,14 +422,14 @@ export function useVault(userEmail: string, userName?: string) {
             name: share.fileName,
             size: share.fileSize || 0,
             type: share.fileType,
-            createdAt: new Date(share.originalCreatedAt || Date.now()),
+            createdAt: new Date(share.file.createdAt || Date.now()),
             parentFolderId: share.parentFolderId || null,
-            owner: share.ownerId,
+            owner: share.file.ownerEmail,
             isSharedFile: true,
           } as any;
 
           tombstone.originalSharedId = share.fileId;
-          tombstone.sharedMeta = { ownerId: share.ownerId, ownerName: share.ownerName };
+          tombstone.sharedMeta = { ownerId: share.file.ownerEmail, ownerName: share.file.ownerName };
 
           console.log(`   ➕ [SYNC] Creating tombstone for held share: ${share.fileName} (${share.fileId})`);
           toAdd.push(tombstone);
@@ -277,11 +442,94 @@ export function useVault(userEmail: string, userName?: string) {
       });
     }
 
+    // ✅ STEP 5: Handle trash status sync for sender's shared files
+    // Batch API calls for temp_deleted updates
+    const filesInTrash = new Set(senderTrash.map((item: any) => item.id));
+    
+    for (const share of sharedByMe) {
+      const allRecipients = recipientsByFileId.get(share.fileId) || [];
+      const isInSenderTrash = filesInTrash.has(share.fileId);
+      
+      if (allRecipients.length > 0) {
+        try {
+          await apiCall('/api/shares/temp-deleted', {
+            method: 'POST',
+            body: JSON.stringify({
+              fileIds: [share.fileId],
+              recipientEmails: allRecipients,
+              isTrashed: isInSenderTrash
+            })
+          });
+          console.log(`✅ [SENDER_${isInSenderTrash ? 'TRASH' : 'RESTORE'}] Updated temp_deleted for ${allRecipients.length} recipients`);
+        } catch (e) {
+          console.error(`❌ [SENDER_${isInSenderTrash ? 'TRASH' : 'RESTORE'}] Failed to update temp_deleted:`, e);
+        }
+      }
+    }
+
+    // ✅ FIX: Compute visibility results BEFORE setFiles (since setFiles callback must be synchronous)
+    const visibilityResults = await Promise.all(
+      sharedWithMe.map(async (share: any) => {
+        const isHidden = hiddenList.includes(share.fileId);
+        if (isHidden) {
+          console.log(`   🚫 [SYNC] "${share.fileName}" permanently hidden, skipping`);
+          return { share, visible: false };
+        }
+        
+        const visible = await shouldShowSharedItem(share, tempDeletedList, share.file.ownerEmail, receiverTrashedList);
+        return { share, visible };
+      })
+    );
+    
+    const precomputedActiveShares = visibilityResults
+      .filter(result => result.visible)
+      .map(result => result.share);
+
+    // ✅ FIX: Fetch fresh owned files from API to catch files added by others (e.g., receiver uploads to shared folder)
+    let freshOwnedFiles: FileItem[] = [];
+    try {
+      const filesResponse = await apiCall('/api/files');
+      if (filesResponse.files) {
+        freshOwnedFiles = filesResponse.files.map((f: any) => ({
+          ...f,
+          createdAt: new Date(f.createdAt),
+          size: typeof f.size === 'string' ? parseInt(f.size, 10) : f.size
+        }));
+        console.log(`📁 [SYNC] Fetched ${freshOwnedFiles.length} fresh owned files from API`);
+      }
+    } catch (e) {
+      console.error('❌ [SYNC] Failed to fetch fresh owned files:', e);
+    }
+
     setFiles((prev) => {
-      // ── dedup own files by ID (first occurrence wins) ──────────────────
       const seenOwn = new Set<string>();
-      let ownFiles = prev.filter((f) => {
-        if (f.isSharedFile) return false;
+      const normalizedUserEmail = userEmail?.toLowerCase() || '';
+      // ✅ FIX: Use fresh owned files from API if available, otherwise fall back to prev
+      // Files from API are ALWAYS owned files (userId matches current user)
+      const sourceFiles = freshOwnedFiles.length > 0 ? freshOwnedFiles : prev;
+      let ownFiles = sourceFiles.filter((f) => {
+        // NEVER include received shares in own files
+        // isReceivedShare = file was shared WITH us by someone else
+        if ((f as any).isReceivedShare) {
+          console.log(`🔧 [SYNC] Excluding "${f.name}" from ownFiles - is a received share`);
+          return false;
+        }
+        
+        // ✅ CRITICAL FIX: Only use owner check, NOT isSharedFile flag!
+        // Files uploaded to shared folders have isSharedFile=true but are still OWNED by uploader
+        // The isSharedFile flag indicates "inside shared folder" NOT "received from someone else"
+        if (f.owner && normalizedUserEmail && f.owner.toLowerCase() !== normalizedUserEmail) {
+          console.log(`🔧 [SYNC] Excluding "${f.name}" from ownFiles - owner mismatch (${f.owner} vs ${userEmail})`);
+          return false;
+        }
+        
+        // If using fresh API data, owner field might not be set - check if it's NOT a received share
+        // (API returns only files where userId = current user)
+        if (!f.owner && freshOwnedFiles.length > 0) {
+          // This is from fresh API call, so it's definitely our file
+          // Don't exclude based on isSharedFile flag
+        }
+        
         if (seenOwn.has(f.id)) {
           console.warn(`🔧 [SYNC] Deduping own file "${f.name}" (${f.id}) — duplicate removed`);
           return false;
@@ -289,81 +537,20 @@ export function useVault(userEmail: string, userName?: string) {
         seenOwn.add(f.id);
         return true;
       });
-      console.log('📁 [SYNC] Own files count:', ownFiles.length);
+      console.log('📁 [SYNC] Own files count:', ownFiles.length, freshOwnedFiles.length > 0 ? '(from fresh API)' : '(from prev state)');
       
-      // Update owner's own files with sharedWith info and sync names
-      sharedByMe.forEach((share) => {
+      sharedByMe.forEach((share: any) => {
         const ownFileIndex = ownFiles.findIndex(f => f.id === share.fileId);
         if (ownFileIndex !== -1) {
-          // Get all recipients for this file
-          const allRecipients = sharedFilesManager.getShareRecipients(share.fileId);
+          const allRecipients = recipientsByFileId.get(share.fileId) || [];
           console.log(`🔍 [RECIPIENTS] File ${share.fileId} shared with ${allRecipients.length} user(s):`, allRecipients);
           
-          // ✅ NEW: Check if file/folder is in sender's trash
-          let isInSenderTrash = false;
-          try {
-            const senderTrashKey = `trash_${userEmail}`;
-            const senderTrashData = localStorage.getItem(senderTrashKey);
-            if (senderTrashData) {
-              const senderTrash = JSON.parse(senderTrashData);
-              isInSenderTrash = senderTrash.some((item: any) => item.id === share.fileId);
-            }
-          } catch (e) {
-            console.error('❌ Error checking sender trash:', e);
-          }
-          
+          const isInSenderTrash = filesInTrash.has(share.fileId);
           console.log(`🗑️ [SENDER_TRASH] File ${share.fileId} in sender's trash: ${isInSenderTrash}`);
           
-          // ✅ FIX: When sender moves to trash, add to ALL recipients' temp_deleted lists
-          if (isInSenderTrash) {
-            console.log(`🗑️ [SENDER_TRASH] Adding to recipients' temp_deleted lists`);
-            allRecipients.forEach(recipient => {
-              const recipientTempDeletedKey = `temp_deleted_shares_${recipient}`;
-              const recipientTempDeletedData = localStorage.getItem(recipientTempDeletedKey);
-              let recipientTempDeletedList: string[] = recipientTempDeletedData ? JSON.parse(recipientTempDeletedData) : [];
-              
-              if (!recipientTempDeletedList.includes(share.fileId)) {
-                recipientTempDeletedList.push(share.fileId);
-                devLog(`🕒 [SENDER_TRASH] Writing temp_deleted_shares for ${recipient} — adding ${share.fileId}`);
-                localStorage.setItem(recipientTempDeletedKey, JSON.stringify(recipientTempDeletedList));
-                devLog(`✅ [SENDER_TRASH] Wrote temp_deleted_shares for ${recipient} — new count ${recipientTempDeletedList.length}`);
-              }
-            });
-          } else {
-            // ✅ FIX: When sender restores from trash, remove from ALL recipients' temp_deleted lists
-            console.log(`♻️ [SENDER_RESTORE] Removing from recipients' temp_deleted lists`);
-            allRecipients.forEach(recipient => {
-              const recipientTempDeletedKey = `temp_deleted_shares_${recipient}`;
-              const recipientTempDeletedData = localStorage.getItem(recipientTempDeletedKey);
-              if (recipientTempDeletedData) {
-                let recipientTempDeletedList: string[] = JSON.parse(recipientTempDeletedData);
-                const before = recipientTempDeletedList.length;
-                recipientTempDeletedList = recipientTempDeletedList.filter(id => id !== share.fileId);
-                
-                if (before !== recipientTempDeletedList.length) {
-                  devLog(`🕒 [SENDER_RESTORE] Writing temp_deleted_shares for ${recipient} — removing ${share.fileId}`);
-                  localStorage.setItem(recipientTempDeletedKey, JSON.stringify(recipientTempDeletedList));
-                  devLog(`✅ [SENDER_RESTORE] Wrote temp_deleted_shares for ${recipient} — new count ${recipientTempDeletedList.length}`);
-                }
-              }
-            });
-          }
-          
-          // ✅ FIX: Check if ANY recipient has the file in trash (temp_deleted)
-          const isInAnyRecipientTrash = allRecipients.some(recipient => {
-            const recipientTempDeletedKey = `temp_deleted_shares_${recipient}`;
-            const recipientTempDeletedData = localStorage.getItem(recipientTempDeletedKey);
-            if (recipientTempDeletedData) {
-              const recipientTempDeletedList: string[] = JSON.parse(recipientTempDeletedData);
-              return recipientTempDeletedList.includes(share.fileId);
-            }
-            return false;
-          });
-          
-          // ✅ FIX: Remove sharedWith if all recipients have trashed it
+          const isInAnyRecipientTrash = tempDeletedList.includes(share.fileId);
           const activeRecipients = isInAnyRecipientTrash ? [] : allRecipients;
           
-          // Check if the shared name conflicts with sender's other files
           const nameFromShare = share.fileName;
           let finalName = nameFromShare;
           
@@ -375,7 +562,6 @@ export function useVault(userEmail: string, userName?: string) {
           );
           
           if (hasConflict) {
-            // Apply conflict resolution for sender's view
             let nameWithoutExt = nameFromShare;
             let extension = '';
             
@@ -406,49 +592,31 @@ export function useVault(userEmail: string, userName?: string) {
         }
       });
 
-      // ✅ FIX: Filter active shares with improved visibility logic
-      // 🔥 NOW passes receiverTrashedList — this is what was missing and caused dupes
-      const activeShares = sharedWithMe.filter(share => {
-        const isHidden = hiddenList.includes(share.fileId);
-
-        // Skip if permanently hidden
-        if (isHidden) {
-          console.log(`   🚫 [SYNC] "${share.fileName}" permanently hidden, skipping`);
-          return false;
-        }
-        
-        // 🔥 FIX: pass receiverTrashedList so the gate can block items inside a trashed folder
-        const visible = shouldShowSharedItem(share, tempDeletedList, share.ownerId, receiverTrashedList);
-        
-        return visible;
-      });
+      // ✅ Use precomputed activeShares (computed before setFiles to handle async properly)
+      const activeShares = precomputedActiveShares;
       
       console.log('\n📋 [SYNC] Active shares after filtering:', activeShares.length);
-      activeShares.forEach((s, i) => {
+      activeShares.forEach((s: any, i: number) => {
         console.log(`   ${i + 1}. "${s.fileName}" (${s.fileType}) - Parent: ${s.parentFolderId || 'ROOT'}`);
       });
       
-      // 🔥 NEW: Separate handling for shares that should go directly to trash
       const sharesToAddToTrash: any[] = [];
       const sharesToAddToFiles: any[] = [];
       
-      activeShares.forEach(share => {
+      activeShares.forEach((share: any) => {
         console.log(`\n🔍 [SYNC] Checking share: "${share.fileName}" (ID: ${share.fileId})`);
+
         console.log(`   Type: ${share.fileType}, Parent: ${share.parentFolderId || 'ROOT'}`);
-        console.log(`   Owner: ${share.ownerId}`);
+        console.log(`   Owner: ${share.file.ownerEmail}`);
         
-        // Check if this item or its parent is in receiver's trash
         const isInReceiverTrash = receiverTrashedList.includes(share.fileId);
         
-        // ✅ CRITICAL FIX: Check if parent folder is in deletedFiles (tombstones)
         let parentInReceiverTrash = false;
         if (share.parentFolderId) {
-          // Check receiver_trashed_shares list
           parentInReceiverTrash = receiverTrashedList.includes(share.parentFolderId);
           
-          // ✅ ALSO check if parent is in deletedFiles tombstones
           if (!parentInReceiverTrash) {
-            const parentTombstone = deletedFiles.find(d => 
+            const parentTombstone = deletedFilesRef.current.find(d => 
               d.id === share.parentFolderId || 
               (d as any).originalSharedId === share.parentFolderId
             );
@@ -468,42 +636,18 @@ export function useVault(userEmail: string, userName?: string) {
         }
       });
       
-      // Build a map of ALL shared item IDs for hierarchy resolution
-      // This includes items already in the files array AND items being added
-      const sharedItemIds = new Set(activeShares.map(s => s.fileId));
+      const sharedItemIds = new Set(activeShares.map((s: any) => s.fileId));
       
-      // Helper function to find parent folder ID from the share entry
       const getSharedParentId = (share: any): string | null => {
-        // Use the parentFolderId from the share entry itself
         const parentId = share.parentFolderId;
-        
-        // If no parent, it's at root level
-        if (!parentId) {
-          return null;
-        }
-        
-        // Check if the parent is also in the shared list
-        if (sharedItemIds.has(parentId)) {
-          return parentId; // Parent is shared, maintain hierarchy
-        }
-        
-        // ✅ FIX: Also check if the parent is one of our own folders.
-        // This handles the case where User A shares folder "test" with User B,
-        // User B uploads a file into "test", which gets auto-shared back to User A.
-        // The file's parentFolderId points to "test" — which is in User A's ownFiles,
-        // but NOT in sharedItemIds (because User A owns it, not received it as a share).
-        if (ownFiles.some(f => f.id === parentId && f.type === 'folder')) {
-          return parentId; // Parent is our own folder, maintain hierarchy
-        }
-        
-        return null; // Parent is not shared or owned, place at root
+        if (!parentId) return null;
+        if (sharedItemIds.has(parentId)) return parentId;
+        if (ownFiles.some(f => f.id === parentId && f.type === 'folder')) return parentId;
+        return null;
       };
       
-      const sharedFileItems: FileItem[] = sharesToAddToFiles
-        .map((share) => {
+      const sharedFileItems: FileItem[] = sharesToAddToFiles.map((share: any) => {
         let displayName = share.fileName;
-        
-        // Determine the parent folder ID from the share entry
         const parentFolderId = getSharedParentId(share);
         
         console.log(`🔍 [SYNC] Processing share: "${share.fileName}"`, {
@@ -513,20 +657,16 @@ export function useVault(userEmail: string, userName?: string) {
           isInSharedSet: share.parentFolderId ? sharedItemIds.has(share.parentFolderId) : false
         });
         
-        
-        // Only check conflicts at the SAME LEVEL (same parent)
         const hasConflict = ownFiles.some(f => 
           f.name === share.fileName && 
           f.parentFolderId === parentFolderId &&
           f.type === share.fileType
         );
         
-        // Also check if there's already another ACTIVE shared file with the same name at the same level
-        const existingSharedConflict = sharesToAddToFiles.filter(s => {
+        const existingSharedConflict = sharesToAddToFiles.filter((s: any) => {
           if (s.fileId === share.fileId) return false;
           if (s.fileName !== share.fileName) return false;
           if (s.fileType !== share.fileType) return false;
-          // Check if they have the same parent
           const sParentId = getSharedParentId(s);
           return sParentId === parentFolderId;
         });
@@ -539,7 +679,6 @@ export function useVault(userEmail: string, userName?: string) {
         });
         
         if (hasConflict || existingSharedConflict.length > 0) {
-          // Apply conflict resolution for receiver
           let nameWithoutExt = share.fileName;
           let extension = '';
           
@@ -554,10 +693,9 @@ export function useVault(userEmail: string, userName?: string) {
           let counter = 1;
           let candidateName = `${nameWithoutExt} (${counter})${extension}`;
           
-          // Check against both own files AND other ACTIVE shared files at the same level
           while (
             ownFiles.some(f => f.name === candidateName && f.parentFolderId === parentFolderId && f.type === share.fileType) ||
-            activeShares.some(s => {
+            activeShares.some((s: any) => {
               if (s.fileId === share.fileId) return false;
               if (s.fileName !== candidateName) return false;
               if (s.fileType !== share.fileType) return false;
@@ -573,77 +711,92 @@ export function useVault(userEmail: string, userName?: string) {
           console.log(`🔀 [SYNC] Receiver conflict: "${share.fileName}" -> "${displayName}"`);
         }
         
+        // ✅ FIX: Use API-based favorites (userFavoritesList from sync)
+        const isFavorite = userFavoritesList.includes(share.fileId);
+        
         return {
           id: share.fileId,
           name: displayName,
           size: share.fileSize,
           type: share.fileType,
-          createdAt: share.originalCreatedAt,
-          parentFolderId: parentFolderId, // ✅ FIX: Preserve folder hierarchy
-          sharedBy: share.ownerId,
-          sharedByName: share.ownerName,
-          owner: share.ownerId,
-          ownerName: share.ownerName,
+          createdAt: share.file.createdAt,
+          parentFolderId: parentFolderId,
+          sharedBy: share.file.ownerEmail,
+          sharedByName: share.file.ownerName, // Owner's display name (live from User table)
+          owner: share.file.ownerEmail,
+          // ✅ ownerName stores uploader's email (for VaultTable "who uploaded" display)
+          ownerName: share.file.uploaderEmail || undefined,
+          // ✅ NEW: uploaderName stores uploader's live display name
+          uploaderName: share.file.uploaderName || undefined,
           isSharedFile: true,
           isReceivedShare: true as any,
-          isFavorite: false,
+          isFavorite, // ✅ Use loaded favorite state
         };
       });
       
       console.log('✅ [SYNC] Final shared file items:', sharedFileItems.length);
       
-      // ✅ FIX: Handle items that should go to trash (parent folder is in receiver's trash)
       if (sharesToAddToTrash.length > 0) {
-        console.log(`🗑️ [TRASH-SYNC-2] Found ${sharesToAddToTrash.length} items whose parent is in receiver's trash`);
-        sharesToAddToTrash.forEach(s => console.log(`   → "${s.fileName}" (${s.fileId}) parent=${s.parentFolderId || 'ROOT'}`));
+        console.log(`🗑️ [TRASH-SYNC-2] Found ${sharesToAddToTrash.length} items to process for receiver's trash`);
+        sharesToAddToTrash.forEach((s: any) => console.log(`   → "${s.fileName}" (${s.fileId}) parent=${s.parentFolderId || 'ROOT'}`));
         
-        // Add these items to deletedFiles as tombstones
         setDeletedFiles((prev) => {
-          const existingIds = new Set(prev.map(d => d.id));
-          const existingOrig = new Set(prev.map(d => (d as any).originalSharedId).filter(Boolean));
+          // Build a map of share fileId -> share data for quick lookup
+          const shareDataMap = new Map<string, any>();
+          sharesToAddToTrash.forEach((share: any) => {
+            shareDataMap.set(share.fileId, share);
+          });
           
-          const toAdd: FileItem[] = [];
-          sharesToAddToTrash.forEach(share => {
-            if (existingIds.has(share.fileId) || existingOrig.has(share.fileId)) {
-              console.log(`   ℹ️ [TRASH-SYNC-2] Tombstone already exists for ${share.fileId}`);
-              return;
+          // Update existing tombstones with fresh share data (e.g., renamed files)
+          let updated = prev.map(d => {
+            const fileId = (d as any).originalSharedId || d.id;
+            const share = shareDataMap.get(fileId);
+            if (share && d.name !== share.fileName) {
+              console.log(`   ✏️ [TRASH-SYNC-2] Updating tombstone name: "${d.name}" -> "${share.fileName}"`);
+              shareDataMap.delete(fileId); // Mark as processed
+              return { ...d, name: share.fileName };
             }
-            
+            if (share) {
+              shareDataMap.delete(fileId); // Mark as processed (no change needed)
+            }
+            return d;
+          });
+          
+          // Add new tombstones for items not already present
+          const toAdd: FileItem[] = [];
+          shareDataMap.forEach((share: any, fileId: string) => {
             const tombstone: FileItem & { originalSharedId?: string; sharedMeta?: any } = {
-              id: share.fileId,
+              id: fileId,
               name: share.fileName,
               size: share.fileSize || 0,
               type: share.fileType,
-              createdAt: new Date(share.originalCreatedAt || Date.now()),
+              createdAt: new Date(share.file.createdAt || Date.now()),
               parentFolderId: share.parentFolderId || null,
-              owner: share.ownerId,
+              owner: share.file.ownerEmail,
               isSharedFile: true,
             } as any;
             
             tombstone.originalSharedId = share.fileId;
-            tombstone.sharedMeta = { ownerId: share.ownerId, ownerName: share.ownerName };
+            tombstone.sharedMeta = { ownerId: share.file.ownerEmail, ownerName: share.file.ownerName };
             
-            console.log(`   ➕ [TRASH-SYNC-2] Creating tombstone for share with trashed parent: ${share.fileName} (${share.fileId})`);
+            console.log(`   ➕ [TRASH-SYNC-2] Creating tombstone: ${share.fileName} (${share.fileId})`);
             toAdd.push(tombstone);
           });
           
           if (toAdd.length > 0) {
-            console.log(`✅ [TRASH-SYNC-2] Adding ${toAdd.length} items to deletedFiles`);
-            return [...prev, ...toAdd];
+            console.log(`✅ [TRASH-SYNC-2] Adding ${toAdd.length} new items to deletedFiles`);
+            updated = [...updated, ...toAdd];
           }
-          return prev;
+          
+          return updated;
         });
       } else {
         console.log(`✅ [TRASH-SYNC-2] sharesToAddToTrash is empty — no items with trashed parents.`);
       }
       
-      // ✅ FIX: deduplicate – if own file and shared file share the same ID, own file wins
-      // Also skip adding shared items if the receiver has a tombstone (deletedFiles)
-      // or has trashed the item/folder (receiverTrashedList). This prevents duplicate
-      // appearances where a receiver-deleted tombstone and a new incoming share collide.
       const ownFileIds = new Set(ownFiles.map(f => f.id));
       const deletedIds = new Set<string>();
-      deletedFiles.forEach(d => {
+      deletedFilesRef.current.forEach(d => {
         deletedIds.add(d.id);
         const orig = (d as any).originalSharedId;
         if (orig) deletedIds.add(orig);
@@ -655,8 +808,6 @@ export function useVault(userEmail: string, userName?: string) {
           return false;
         }
 
-        // ✅ CRITICAL FIX: Check if receiver has this in trash (by ID, not name)
-        // This prevents showing "BEN" in Shared Items when receiver has "ASD" in trash
         if (deletedIds.has(sf.id) || receiverTrashedList.includes(sf.id)) {
           console.log(`🔧 [SYNC] Skipping shared item "${sf.name}" (${sf.id}) - receiver has it in trash`, {
             inDeletedIds: deletedIds.has(sf.id),
@@ -665,8 +816,6 @@ export function useVault(userEmail: string, userName?: string) {
           return false;
         }
         
-        // ✅ CRITICAL FIX: Check if parent folder is in receiver's trash
-        // If parent is trashed, this item should NOT appear in files - it should go to deletedFiles instead
         if (sf.parentFolderId && receiverTrashedList.includes(sf.parentFolderId)) {
           console.log(`🔧 [SYNC] Skipping shared item "${sf.name}" (${sf.id}) - parent folder ${sf.parentFolderId} is in receiver's trash`);
           return false;
@@ -677,11 +826,8 @@ export function useVault(userEmail: string, userName?: string) {
 
       console.log(`📊 [SYNC] After dedup: ${ownFiles.length} own + ${uniqueSharedFiles.length} shared (${sharedFileItems.length - uniqueSharedFiles.length} dupes removed)`);
       
-      // Add share info to all files
       const combinedFiles = [...ownFiles, ...uniqueSharedFiles];
 
-      // ✅ CRITICAL: Deduplicate final combined list by `id` (own wins because ownFiles were prepended)
-      // This prevents duplicate folders/files from appearing in the UI
       try {
         const dedupMap = new Map<string, FileItem>();
         const dupIds: string[] = [];
@@ -697,75 +843,67 @@ export function useVault(userEmail: string, userName?: string) {
         const combinedDeduped = Array.from(dedupMap.values());
 
         const finalFiles = combinedDeduped.map(file => {
-          if (file.isReceivedShare) return file;
-          const sharedWith = sharedFilesManager.getShareRecipients(file.id);
+          // ✅ FIX: Apply user-specific favorites from API (not the old shared File.isFavorite)
+          // BUT: If this file has a pending favorite toggle, preserve its current state!
+          const existingFile = prev.find(f => f.id === file.id);
+          const isPendingFavorite = pendingFavoritesRef.current.has(file.id);
+          const isFavorite = isPendingFavorite 
+            ? (existingFile?.isFavorite ?? false) // Preserve current state for pending toggles
+            : userFavoritesList.includes(file.id); // Otherwise use API state
+          
+          if (file.isReceivedShare) {
+            return {
+              ...file,
+              isFavorite
+            };
+          }
+          const sharedWith = recipientsByFileId.get(file.id) || [];
+          // ✅ FIX: Don't preserve old sharedWith - trust the API
+          // If file is not in sharedByMe anymore, it has no active shares
+          // This ensures paperclip disappears after unsharing
           return {
             ...file,
+            isFavorite,
             sharedWith: sharedWith.length > 0 ? sharedWith : undefined
           };
         });
 
-        // Update storageUsed to account for received shared files appearing/disappearing
-        try {
-          const prevReceivedTotal = prev
-            .filter(f => (f as any).isReceivedShare)
-            .reduce((acc, f) => acc + (f.size || 0), 0);
-
-          const newReceivedTotal = finalFiles
-            .filter(f => (f as any).isReceivedShare)
-            .reduce((acc, f) => acc + (f.size || 0), 0);
-
-          const delta = newReceivedTotal - prevReceivedTotal;
-          if (delta !== 0) {
-            console.log(`📦 [STORAGE] Adjusting storage for received shares: delta=${delta}`);
-            setStorageUsed((s) => Math.max(0, s + delta));
-          }
-        } catch (e) {
-          console.error('❌ [STORAGE] Failed to adjust storage for shared items', e);
-        }
-
-        // ✅ FIX 2: RECALCULATE storage from scratch (prevents double-counting)
+        // ✅ FIX: Only count files I OWN toward storage (not received shares)
         let totalStorage = 0;
-        const storageBreakdown: { own: number; received: number; folders: number } = {
+        const storageBreakdown: { own: number; folders: number } = {
           own: 0,
-          received: 0,
           folders: 0
         };
         
         finalFiles.forEach(file => {
           if (file.type === 'folder') {
             storageBreakdown.folders++;
-            return; // Folders don't count toward storage
+            return;
           }
           
-          // CRITICAL: Each file can ONLY be counted ONCE
-          if (file.owner === userEmail && !file.isReceivedShare) {
-            // This is OUR file (we created it)
+          // Only count files I OWN (not received shares)
+          if (emailsMatch(file.owner, userEmail) && !file.isReceivedShare) {
             totalStorage += file.size;
             storageBreakdown.own += file.size;
-          } else if (file.isReceivedShare) {
-            // This is a RECEIVED share (someone else owns it)
-            totalStorage += file.size;
-            storageBreakdown.received += file.size;
           }
-          // If a file doesn't match either condition, it doesn't count
-          // (This should never happen but prevents counting files twice)
+          // Received shares don't count toward MY storage
         });
         
-        console.log(`📊 [SYNC] Storage recalculated: ${totalStorage} bytes`);
-        console.log(`   Breakdown: Own=${storageBreakdown.own} bytes, Received=${storageBreakdown.received} bytes, Folders=${storageBreakdown.folders}`);
+        console.log(`📊 [SYNC] Storage recalculated: ${totalStorage} bytes (own files only)`);
+        console.log(`   Breakdown: Own=${storageBreakdown.own} bytes, Folders=${storageBreakdown.folders}`);
         setStorageUsed(totalStorage);
 
-        console.log(`📊 [SYNC] Final file count: ${finalFiles.length} (${ownFiles.length} own + ${uniqueSharedFiles.length} shared)`);
-        console.log('🔄 [SYNC] ================== SYNC COMPLETE ==================\n');
+        // ✅ FIX: Calculate shared files count from the data we already have
+        setSharedFilesCount(uniqueSharedFiles.length);
+
+        console.log(`📊 [SYNC] Final: ${finalFiles.length} files (${ownFiles.length} own + ${uniqueSharedFiles.length} shared)`);
 
         return finalFiles;
       } catch (e) {
         console.error('❌ [SYNC] Deduplication of combined files failed', e);
-        // Fallback to previous behaviour
         const finalFiles = combinedFiles.map(file => {
           if (file.isReceivedShare) return file;
-          const sharedWith = sharedFilesManager.getShareRecipients(file.id);
+          const sharedWith = recipientsByFileId.get(file.id) || [];
           return {
             ...file,
             sharedWith: sharedWith.length > 0 ? sharedWith : undefined
@@ -773,208 +911,226 @@ export function useVault(userEmail: string, userName?: string) {
         });
         return finalFiles;
       }
-      // Update storageUsed to account for received shared files appearing/disappearing
-      try {
-        const prevReceivedTotal = prev
-          .filter(f => (f as any).isReceivedShare)
-          .reduce((acc, f) => acc + (f.size || 0), 0);
+    });    } finally {
+      isSyncing.current = false;
+    }
+  }, [userEmail, shouldShowSharedItem, isSenderFolderInTrash]); // ✅ FIX: Removed deletedFiles to break infinite loop
 
-        const newReceivedTotal = finalFiles
-          .filter(f => (f as any).isReceivedShare)
-          .reduce((acc, f) => acc + (f.size || 0), 0);
+  // ✅ PERFORMANCE: Debounced sync wrapper - prevents rapid consecutive syncs
+  const debouncedSyncSharedFiles = useCallback(() => {
+    if (syncDebounceTimer.current) {
+      clearTimeout(syncDebounceTimer.current);
+    }
+    syncDebounceTimer.current = setTimeout(() => {
+      syncSharedFiles();
+    }, 300); // Wait 300ms before syncing to batch rapid calls
+  }, [syncSharedFiles]);
 
-        const delta = newReceivedTotal - prevReceivedTotal;
-        if (delta !== 0) {
-          console.log(`📦 [STORAGE] Adjusting storage for received shares: delta=${delta}`);
-          setStorageUsed((s) => Math.max(0, s + delta));
-        }
-      } catch (e) {
-        console.error('❌ [STORAGE] Failed to adjust storage for shared items', e);
-      }
+  // ✅ FIX: Keep deletedFilesRef in sync with deletedFiles state
+  useEffect(() => {
+    deletedFilesRef.current = deletedFiles;
+  }, [deletedFiles]);
 
-      console.log(`📊 [SYNC] Final file count: ${finalFiles.length} (${ownFiles.length} own + ${uniqueSharedFiles.length} shared)`);
-      console.log('🔄 [SYNC] ================== SYNC COMPLETE ==================\n');
+  // FINISHED THIS PART ABOVE
 
-      return finalFiles;
-    });
-  }, [userEmail, shouldShowSharedItem, isSenderFolderInTrash]);
-
-  // 1) Initial load (own files + shared files)
+ // 1) Initial load (own files + shared files)
   useEffect(() => {
     if (!userEmail) return;
 
-    console.log('🚀 [INIT] Loading vault for user:', userEmail);
-    const savedFiles = localStorage.getItem(`vault_${userEmail}`);
-    const savedTrash = localStorage.getItem(`trash_${userEmail}`);
-    const savedStorage = localStorage.getItem(`storage_${userEmail}`);
-
-    let loadedFiles: FileItem[] = [];
-    if (savedFiles) {
-      const parsed = JSON.parse(savedFiles);
-      loadedFiles = parsed.map((f: any) => ({ ...f, createdAt: new Date(f.createdAt) }));
-      // SANITY: Prevent data leakage between accounts on the same browser.
-      // Only keep entries that are either owned by this user OR are received shares.
-      try {
-        console.log('🔎 [INIT] LocalStorage keys snapshot:', Object.keys(localStorage));
-        const beforeCount = loadedFiles.length;
-        loadedFiles = loadedFiles.filter((f: any) => {
-          // Keep if explicitly owned by this user
-          if (f.owner && f.owner === userEmail) return true;
-          // Keep if marked as a received shared item
-          if (f.isReceivedShare) return true;
-          // Otherwise drop it as potential contamination
-          console.warn('⚠️ [INIT] Dropping unexpected vault entry not owned or received:', f.id || f.name);
-          return false;
-        });
-        if (loadedFiles.length !== beforeCount) {
-          console.log(`🧹 [INIT] Filtered vault entries: ${beforeCount} -> ${loadedFiles.length}`);
-        }
-        // Deduplicate by id to avoid duplicate entries making it through (safety)
-        try {
-          const map = new Map<string, any>();
-          for (const f of loadedFiles) map.set(f.id, f);
-          const deduped = Array.from(map.values());
-          if (deduped.length !== loadedFiles.length) {
-            console.log(`🧹 [INIT] Deduped vault entries: ${loadedFiles.length} -> ${deduped.length}`);
-            loadedFiles = deduped;
-            try { localStorage.setItem(`vault_${userEmail}`, JSON.stringify(loadedFiles)); } catch (e) { console.warn('⚠️ [INIT] Failed to persist deduped vault', e); }
-          }
-        } catch (e) {
-          console.warn('⚠️ [INIT] Vault dedupe failed', e);
-        }
-      } catch (e) {
-        console.error('❌ [INIT] Failed during vault sanitization check', e);
-      }
-      console.log('📂 [INIT] Loaded files:', loadedFiles.length);
-    }
-
-    setFiles(loadedFiles);
-
-    if (savedTrash) {
-      const parsed = JSON.parse(savedTrash);
-      let deletedItems = parsed.map((f: any) => ({ ...f, createdAt: new Date(f.createdAt) }));
-      // Ensure trash items either belong to this user or are proper tombstones (originalSharedId)
-      try {
-        const beforeTrash = deletedItems.length;
-        deletedItems = deletedItems.filter((d: any) => {
-          if (d.owner && d.owner === userEmail) return true;
-          if (d.originalSharedId) return true; // tombstone for received share
-          console.warn('⚠️ [INIT] Dropping unexpected trash entry not owned or tombstone:', d.id || d.name);
-          return false;
-        });
-        if (deletedItems.length !== beforeTrash) {
-          console.log(`🧹 [INIT] Filtered trash entries: ${beforeTrash} -> ${deletedItems.length}`);
-        }
-        // Deduplicate trash by id to avoid duplicate tombstones
-        try {
-          const tmap = new Map<string, any>();
-          for (const t of deletedItems) tmap.set(t.id, t);
-          const td = Array.from(tmap.values());
-          if (td.length !== deletedItems.length) {
-            console.log(`🧹 [INIT] Deduped trash entries: ${deletedItems.length} -> ${td.length}`);
-            deletedItems = td;
-            try { localStorage.setItem(`trash_${userEmail}`, JSON.stringify(deletedItems)); } catch (e) { console.warn('⚠️ [INIT] Failed to persist deduped trash', e); }
-          }
-        } catch (e) {
-          console.warn('⚠️ [INIT] Trash dedupe failed', e);
-        }
-      } catch (e) {
-        console.error('❌ [INIT] Failed during trash sanitization check', e);
-      }
-      setDeletedFiles(deletedItems);
-      console.log('🗑️ [INIT] Loaded deleted files:', deletedItems.length);
-    }
-    // ✅ FIX 3: Recalculate storage from loaded files (don't trust saved value)
-    let calculatedStorage = 0;
-    loadedFiles.forEach(file => {
-      if (file.type === 'folder') return;
+    const loadInitialData = async () => {
+      console.log('🚀 [INIT] Loading vault for user:', userEmail);
       
-      if (file.owner === userEmail && !file.isReceivedShare) {
-        calculatedStorage += file.size;
-      } else if (file.isReceivedShare) {
-        calculatedStorage += file.size;
-      }
-    });
-    
-    const savedStorageNum = savedStorage ? parseInt(savedStorage, 10) : 0;
-    if (calculatedStorage !== savedStorageNum) {
-      console.log(`📊 [INIT] Storage mismatch: saved=${savedStorageNum}, calculated=${calculatedStorage}`);
-    }
-    setStorageUsed(calculatedStorage);
+      // Normalize user email for case-insensitive comparisons (used throughout)
+      const normalizedUserEmail = userEmail.toLowerCase();
+      
+      // Fetch from API instead of localStorage.getItem()
+      const filesResponse = await apiCall('/api/files');
+      const trashResponse = await apiCall('/api/trash');
+      
+      // Get storage (we'll recalculate it, but fetch for logging)
+      let savedStorageNum = 0;
 
-    hasLoaded.current = true;
-    syncSharedFiles();
+      let loadedFiles: FileItem[] = [];
+      if (filesResponse.files) {
+        const parsed = filesResponse.files;
+        loadedFiles = parsed.map((f: any) => ({ 
+          ...f, 
+          createdAt: new Date(f.createdAt),
+          size: typeof f.size === 'string' ? parseInt(f.size, 10) : f.size
+        }));
+        
+        // SANITY: Prevent data leakage between accounts on the same browser.
+        // Only keep entries that are either owned by this user OR are received shares.
+        // Use case-insensitive email comparison for owner check
+        try {
+          console.log('🔎 [INIT] API response loaded');
+          const beforeCount = loadedFiles.length;
+          loadedFiles = loadedFiles.filter((f: any) => {
+            // Keep if explicitly owned by this user (case-insensitive)
+            if (f.owner && f.owner.toLowerCase() === normalizedUserEmail) return true;
+            // Keep if marked as a received shared item
+            if (f.isReceivedShare) return true;
+            // Otherwise drop it as potential contamination
+            console.warn('⚠️ [INIT] Dropping unexpected vault entry not owned or received:', f.id || f.name);
+            return false;
+          });
+          if (loadedFiles.length !== beforeCount) {
+            console.log(`🧹 [INIT] Filtered vault entries: ${beforeCount} -> ${loadedFiles.length}`);
+          }
+          // Deduplicate by id to avoid duplicate entries making it through (safety)
+          try {
+            const map = new Map<string, any>();
+            for (const f of loadedFiles) map.set(f.id, f);
+            const deduped = Array.from(map.values());
+            if (deduped.length !== loadedFiles.length) {
+              console.log(`🧹 [INIT] Deduped vault entries: ${loadedFiles.length} -> ${deduped.length}`);
+              loadedFiles = deduped;
+              // Note: No localStorage.setItem here - API is source of truth
+            }
+          } catch (e) {
+            console.warn('⚠️ [INIT] Vault dedupe failed', e);
+          }
+        } catch (e) {
+          console.error('❌ [INIT] Failed during vault sanitization check', e);
+        }
+        console.log('📂 [INIT] Loaded files:', loadedFiles.length);
+      }
+
+      setFiles(loadedFiles);
+
+      if (trashResponse.data) {
+        const parsed = trashResponse.data;
+        let deletedItems = parsed.map((f: any) => ({ ...f, createdAt: new Date(f.createdAt) }));
+        // Ensure trash items either belong to this user or are proper tombstones (originalSharedId)
+        // Use case-insensitive email comparison for owner check
+        try {
+          const beforeTrash = deletedItems.length;
+          deletedItems = deletedItems.filter((d: any) => {
+            if (d.owner && d.owner.toLowerCase() === normalizedUserEmail) return true;
+            if (d.originalSharedId) return true; // tombstone for received share
+            console.warn('⚠️ [INIT] Dropping unexpected trash entry not owned or tombstone:', d.id || d.name);
+            return false;
+          });
+          if (deletedItems.length !== beforeTrash) {
+            console.log(`🧹 [INIT] Filtered trash entries: ${beforeTrash} -> ${deletedItems.length}`);
+          }
+          // Deduplicate trash by id to avoid duplicate tombstones
+          try {
+            const tmap = new Map<string, any>();
+            for (const t of deletedItems) tmap.set(t.id, t);
+            const td = Array.from(tmap.values());
+            if (td.length !== deletedItems.length) {
+              console.log(`🧹 [INIT] Deduped trash entries: ${deletedItems.length} -> ${td.length}`);
+              deletedItems = td;
+              // Note: No localStorage.setItem here - API is source of truth
+            }
+          } catch (e) {
+            console.warn('⚠️ [INIT] Trash dedupe failed', e);
+          }
+        } catch (e) {
+          console.error('❌ [INIT] Failed during trash sanitization check', e);
+        }
+        setDeletedFiles(deletedItems);
+        console.log('🗑️ [INIT] Loaded deleted files:', deletedItems.length);
+      }
+      
+      // ✅ FIX 3: Recalculate storage from loaded files (don't trust saved value)
+      // ONLY count files that I OWN (not received shares)
+      let calculatedStorage = 0;
+      loadedFiles.forEach(file => {
+        if (file.type === 'folder') return;
+        
+        // Only count files I actually OWN (my files, not received shares)
+        if (emailsMatch(file.owner, userEmail) && !file.isReceivedShare) {
+          calculatedStorage += file.size;
+        }
+        // Received shares don't count toward MY storage - they're owned by someone else
+      });
+      
+      if (calculatedStorage !== savedStorageNum) {
+        console.log(`📊 [INIT] Storage mismatch: saved=${savedStorageNum}, calculated=${calculatedStorage}`);
+      }
+      setStorageUsed(calculatedStorage);
+
+      hasLoaded.current = true;
+      syncSharedFiles();
+    };
+
+    loadInitialData();
   }, [userEmail, syncSharedFiles]);
 
   // 2) Listen for the custom same-tab event
   useEffect(() => {
     const handler = () => {
       console.log('🔔 [EVENT] Received same-tab SHARED_FILES_EVENT');
-      syncSharedFiles();
+      debouncedSyncSharedFiles();
     };
     window.addEventListener(SHARED_FILES_EVENT, handler);
     return () => window.removeEventListener(SHARED_FILES_EVENT, handler);
-  }, [syncSharedFiles]);
+  }, [debouncedSyncSharedFiles]);
 
   // 3) Listen for the native cross-tab `storage` event
   useEffect(() => {
     const handler = (e: StorageEvent) => {
       if (e.key === 'shared_files_global' || e.key === SHARED_FILES_SYNC_TRIGGER) {
         console.log('🔔 [EVENT] Received cross-tab storage event for key:', e.key);
-        syncSharedFiles();
+        debouncedSyncSharedFiles();
       }
     };
     window.addEventListener('storage', handler);
     return () => window.removeEventListener('storage', handler);
-  }, [syncSharedFiles]);
+  }, [debouncedSyncSharedFiles]);
+
+  // 4) ✅ Polling for real-time shared file updates (every 30 seconds, only when tab is visible)
+  useEffect(() => {
+    if (!userEmail) return;
+    
+    let pollInterval: NodeJS.Timeout | null = null;
+    
+    const startPolling = () => {
+      if (pollInterval) return; // Already polling
+      pollInterval = setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          console.log('🔄 [POLL] Checking for shared file updates...');
+          syncSharedFiles();
+        }
+      }, 10000); // Poll every 10 seconds for faster sync
+    };
+    
+    const stopPolling = () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    };
+    
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Sync immediately when tab becomes visible, then start polling
+        syncSharedFiles();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    };
+    
+    // Start polling if tab is already visible
+    if (document.visibilityState === 'visible') {
+      startPolling();
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [userEmail, syncSharedFiles]);
 
   // ─── persist own files (GUARDED) ────────────────────────────────────
-  useEffect(() => {
-    if (!hasLoaded.current || !userEmail) return;
-    // Dedup by ID before writing — first occurrence wins
-    const seen = new Set<string>();
-    const ownFiles = files.filter((f) => {
-      if (f.isSharedFile) return false;
-      if (seen.has(f.id)) return false;
-      seen.add(f.id);
-      return true;
-    });
-    try {
-      const key = `vault_${userEmail}`;
-      const serialized = JSON.stringify(ownFiles);
-      devLog('Persisting vault key', key, 'len', serialized.length, 'hasLoaded', hasLoaded.current);
-      localStorage.setItem(key, serialized);
-      devLog('Persisted vault key', key, 'len', serialized.length);
-    } catch (e) {
-      console.error('[useVault] Failed persisting vault data', e);
-    }
-  }, [files, userEmail]);
-
-  useEffect(() => {
-    if (!hasLoaded.current || !userEmail) return;
-    try {
-      const key = `trash_${userEmail}`;
-      const serialized = JSON.stringify(deletedFiles);
-      devLog('Persisting trash key', key, 'len', serialized.length, 'hasLoaded', hasLoaded.current);
-      localStorage.setItem(key, serialized);
-      devLog('Persisted trash key', key, 'len', serialized.length);
-    } catch (e) {
-      console.error('[useVault] Failed persisting trash data', e);
-    }
-  }, [deletedFiles, userEmail]);
-
-  useEffect(() => {
-    if (!hasLoaded.current || !userEmail) return;
-    try {
-      const key = `storage_${userEmail}`;
-      const value = storageUsed.toString();
-      devLog('Persisting storage key', key, 'value', value, 'hasLoaded', hasLoaded.current);
-      localStorage.setItem(key, value);
-      devLog('Persisted storage key', key, 'value', value);
-    } catch (e) {
-      console.error('[useVault] Failed persisting storage data', e);
-    }
-  }, [storageUsed, userEmail]);
+  // NOTE: These persistence hooks are REMOVED because API is now the source of truth
+  // Individual handler functions (handleCreateFolder, handleFilesSelected, etc.) 
+  // will call the API directly to persist changes
 
   // ✅ FIX: Periodic storage recalculation to catch and fix double-counting
   useEffect(() => {
@@ -982,32 +1138,28 @@ export function useVault(userEmail: string, userName?: string) {
     
     const recalculateStorage = () => {
       let correctTotal = 0;
-      const breakdown: { own: number; received: number; skipped: number } = {
+      const breakdown: { own: number; skipped: number } = {
         own: 0,
-        received: 0,
         skipped: 0
       };
       
       files.forEach(file => {
         if (file.type === 'folder') return;
         
-        // CRITICAL: Each file counted EXACTLY ONCE
-        if (file.owner === userEmail && !file.isReceivedShare) {
+        // CRITICAL: Only count files I OWN (not received shares)
+        // Received shares belong to someone else - they don't count toward MY storage
+        if (emailsMatch(file.owner, userEmail) && !file.isReceivedShare) {
           correctTotal += file.size;
           breakdown.own += file.size;
-        } else if (file.isReceivedShare) {
-          correctTotal += file.size;
-          breakdown.received += file.size;
         } else {
-          // This file doesn't match criteria - log it
+          // Not my file or it's a received share - don't count it
           breakdown.skipped++;
-          console.warn(`⚠️ [CLEANUP] Skipped file: ${file.name} (owner=${file.owner}, isReceivedShare=${file.isReceivedShare})`);
         }
       });
       
       if (correctTotal !== storageUsed) {
         console.log(`🔄 [CLEANUP] Fixing storage: ${storageUsed} -> ${correctTotal} bytes`);
-        console.log(`   Breakdown: Own=${breakdown.own}, Received=${breakdown.received}, Skipped=${breakdown.skipped} files`);
+        console.log(`   Breakdown: Own=${breakdown.own}, Skipped=${breakdown.skipped} files`);
         setStorageUsed(correctTotal);
       }
     };
@@ -1068,7 +1220,7 @@ export function useVault(userEmail: string, userName?: string) {
     return candidateName;
   };
 
-  // ─── upload ─────────────────────────────────────────────────────────
+// ─── upload ─────────────────────────────────────────────────────────
   const handleFilesSelected = async (
     fileList: FileList | File[],
     parentId: string | null = currentFolderId
@@ -1078,33 +1230,79 @@ export function useVault(userEmail: string, userName?: string) {
       return;
     }
     
+    // ✅ DEBUG: Log upload context for debugging ownership issues
+    console.log(`📤 [UPLOAD-DEBUG] Upload initiated:`, {
+      userEmail,
+      parentIdFromArg: parentId,
+      currentFolderIdFromState: currentFolderId,
+      fileCount: fileList instanceof FileList ? fileList.length : fileList.length
+    });
+    
     // ✅ FIX: Check if uploading to a shared folder and prepare auto-share
     let targetParentId = parentId;
     let shareOwner: string | null = null;
     let shareOwnerName: string | null = null;
     let shareRecipients: string[] = [];
-    let sharedParentFolderId: string | null = null; // ✅ FIX: Track the actual shared folder ID
+    let sharedParentFolderId: string | null = null;
+    let isUploadingToOthersFolder = false;
+    
+    // ✅ SAFETY CHECK: Verify targetParentId belongs to user OR is a shared folder they have access to
+    if (targetParentId) {
+      const parentFolder = files.find(f => f.id === targetParentId);
+      
+      if (!parentFolder) {
+        console.warn(`⚠️ [UPLOAD] Parent folder ${targetParentId} not found in files state - uploading to root instead`);
+        targetParentId = null;
+      } else {
+        console.log(`📤 [UPLOAD-DEBUG] Parent folder found:`, {
+          name: parentFolder.name,
+          owner: parentFolder.owner,
+          isSharedFile: parentFolder.isSharedFile,
+          isReceivedShare: (parentFolder as any).isReceivedShare
+        });
+      }
+    }
     
     // Check if we're uploading to a shared folder
     if (targetParentId) {
       const parentFolder = files.find(f => f.id === targetParentId);
-      if (parentFolder && parentFolder.isSharedFile && parentFolder.owner && parentFolder.owner !== userEmail) {
-        // ✅ FIX: Allow upload – auto-share new files back to the folder owner
-        shareRecipients = [parentFolder.owner];
+      
+      // ✅ IMPROVED: Check if this is a RECEIVED shared folder (owned by someone else)
+      // Use multiple checks for robustness: isSharedFile, isReceivedShare, or owner mismatch
+      const isReceivedFolder = parentFolder && (
+        (parentFolder as any).isReceivedShare ||
+        (parentFolder.isSharedFile && parentFolder.owner && !emailsMatch(parentFolder.owner, userEmail)) ||
+        (parentFolder.owner && !emailsMatch(parentFolder.owner, userEmail))
+      );
+      
+      if (isReceivedFolder && parentFolder.owner) {
+        // ✅ FIX: Uploading to someone else's shared folder
+        // File stays owned by uploader, but share WITH folder owner so they can see it
+        isUploadingToOthersFolder = true;
+        sharedParentFolderId = targetParentId;
+        shareRecipients = [parentFolder.owner]; // Share with folder owner
         shareOwner = userEmail;
         shareOwnerName = userName || userEmail;
-        sharedParentFolderId = targetParentId; // ✅ CRITICAL: Save the shared folder ID
-        console.log(`📤 [UPLOAD] Uploading to RECEIVED shared folder "${parentFolder.name}" (ID: ${targetParentId}) - will auto-share back to owner:`, parentFolder.owner);
+        console.log(`📤 [UPLOAD] Uploading to RECEIVED shared folder "${parentFolder.name}" - will share WITH owner ${parentFolder.owner}`);
       }
       
       // Check if we're uploading to OUR OWN shared folder
-      if (parentFolder && parentFolder.owner === userEmail) {
-        shareRecipients = sharedFilesManager.getShareRecipients(targetParentId);
-        if (shareRecipients.length > 0) {
-          shareOwner = userEmail;
-          shareOwnerName = userName || userEmail;
-          sharedParentFolderId = targetParentId; // ✅ Save folder ID for our own shared folder too
-          console.log(`📤 [UPLOAD] Uploading to shared folder "${parentFolder.name}" - will auto-share with:`, shareRecipients);
+      if (parentFolder && emailsMatch(parentFolder.owner, userEmail)) {
+        try {
+          const recipientsResponse = await apiCall('/api/shares/recipients', {
+            method: 'POST',
+            body: JSON.stringify({ fileId: targetParentId })
+          });
+          shareRecipients = recipientsResponse.recipients || [];
+          if (shareRecipients.length > 0) {
+            shareOwner = userEmail;
+            shareOwnerName = userName || userEmail;
+            sharedParentFolderId = targetParentId;
+            console.log(`📤 [UPLOAD] Uploading to shared folder "${parentFolder.name}" - will auto-share with:`, shareRecipients);
+          }
+        } catch (e) {
+          console.error('Failed to fetch recipients:', e);
+          shareRecipients = [];
         }
       }
     }
@@ -1136,7 +1334,15 @@ export function useVault(userEmail: string, userName?: string) {
             type: 'folder',
             createdAt: new Date(),
             parentFolderId: currentParent,
+            // ✅ FIX: Owner is ALWAYS the uploader (matches API behavior)
             owner: userEmail,
+            // ✅ FIX: ownerName stores uploader's email for display when inside others' folders
+            ownerName: isUploadingToOthersFolder ? userEmail : undefined,
+            // ✅ FIX: Mark as "inside shared folder" but NOT as received share (uploader owns it)
+            isSharedFile: isUploadingToOthersFolder ? true : undefined,
+            insideSharedFolder: isUploadingToOthersFolder ? true : undefined, // ✅ NEW: Track that it's inside a shared folder
+            // ✅ FIX: If uploading to shared folder, show paper clip immediately
+            sharedWith: shareRecipients.length > 0 ? shareRecipients : undefined,
           });
 
           currentParent = folderId;
@@ -1155,7 +1361,15 @@ export function useVault(userEmail: string, userName?: string) {
         type: 'file',
         createdAt: new Date(),
         parentFolderId: currentParent,
+        // ✅ FIX: Owner is ALWAYS the uploader (matches API behavior)
         owner: userEmail,
+        // ✅ FIX: ownerName stores uploader's email for display when inside others' folders
+        ownerName: isUploadingToOthersFolder ? userEmail : undefined,
+        // ✅ FIX: Mark as "inside shared folder" but NOT as received share (uploader owns it)
+        isSharedFile: isUploadingToOthersFolder ? true : undefined,
+        insideSharedFolder: isUploadingToOthersFolder ? true : undefined, // ✅ NEW: Track that it's inside a shared folder
+        // ✅ FIX: If uploading to shared folder, show paper clip immediately
+        sharedWith: shareRecipients.length > 0 ? shareRecipients : undefined,
       };
 
       newFiles.push(fileItem);
@@ -1171,8 +1385,71 @@ export function useVault(userEmail: string, userName?: string) {
       }
       return [...prev, ...toAdd];
     });
-    setStorageUsed((prev) => prev + filesArray.reduce((acc, f) => acc + f.size, 0));
+    
+    // ✅ FIX: Only add to storage if uploading to OWN folder
+    // When uploading to someone else's shared folder, files belong to them (not us)
+    if (!isUploadingToOthersFolder) {
+      setStorageUsed((prev) => prev + filesArray.reduce((acc, f) => acc + f.size, 0));
+      console.log(`📊 [UPLOAD] Added ${filesArray.reduce((acc, f) => acc + f.size, 0)} bytes to storage (own folder)`);
+    } else {
+      console.log(`📊 [UPLOAD] NOT adding to storage - files belong to folder owner`);
+    }
+    
     setUploadProgress(newProgress);
+
+    // ✅ NEW: Upload folders to API first (before files, so parentFolderId references exist)
+    const foldersToUpload = newFiles.filter(f => f.type === 'folder');
+    for (const folder of foldersToUpload) {
+      try {
+        const uploadResponse = await apiCall('/api/files/upload', {
+          method: 'POST',
+          body: JSON.stringify({
+            encryptedData: [],
+            iv: [],
+            wrappedKey: [],
+            fileName: folder.name,
+            mimeType: null,
+            size: 0,
+            parentFolderId: folder.parentFolderId,
+            isFolder: true
+          })
+        });
+
+        if (uploadResponse.file) {
+          const serverFolder = uploadResponse.file;
+          const oldId = folder.id;
+
+          // Update local state with server ID
+          if (oldId !== serverFolder.id) {
+            // Update the folder reference
+            folder.id = serverFolder.id;
+            folder.name = serverFolder.name;
+
+            // Update any files that have this folder as parent
+            newFiles.forEach(f => {
+              if (f.parentFolderId === oldId) {
+                f.parentFolderId = serverFolder.id;
+              }
+            });
+
+            // Update files state with new folder ID
+            setFiles(prev => prev.map(f => {
+              if (f.id === oldId) {
+                return { ...f, id: serverFolder.id, name: serverFolder.name };
+              }
+              if (f.parentFolderId === oldId) {
+                return { ...f, parentFolderId: serverFolder.id };
+              }
+              return f;
+            }));
+
+            console.log(`📁 [UPLOAD] Folder uploaded with new ID: ${oldId} → ${serverFolder.id}`);
+          }
+        }
+      } catch (e) {
+        console.error(`❌ [UPLOAD] Failed to upload folder "${folder.name}" to API:`, e);
+      }
+    }
 
     for (let i = 0; i < filesArray.length; i++) {
       const file = filesArray[i];
@@ -1189,6 +1466,75 @@ export function useVault(userEmail: string, userName?: string) {
             window.dispatchEvent(new CustomEvent('file-stored', { detail: { fileId: fileItem.id } }));
           } catch (e) {
             console.debug('[useVault] file-stored event failed', e);
+          }
+          
+          // ✅ NEW: Persist file to API
+          try {
+            const uploadResponse = await apiCall('/api/files/upload', {
+              method: 'POST',
+              body: JSON.stringify({
+                encryptedData: [], // TODO: Add encryption
+                iv: [],
+                wrappedKey: [],
+                fileName: fileItem.name,
+                mimeType: file.type,
+                size: file.size,
+                parentFolderId: fileItem.parentFolderId,
+                isFolder: false
+              })
+            });
+            
+            // ✅ FIX: Update local state with the actual filename/ID from API
+            // The API may have auto-renamed the file if a duplicate existed
+            if (uploadResponse.file) {
+              const serverFile = uploadResponse.file;
+              const oldId = fileItem.id;
+              const oldName = fileItem.name;
+              
+              // ✅ CRITICAL: Also update fileStorage with the new server ID
+              // The file is stored under oldId, we need it under the new server ID
+              if (oldId !== serverFile.id) {
+                try {
+                  // Copy the file data from old ID to new ID in fileStorage
+                  const existingFile = await fileStorage.getFileURL(oldId);
+                  if (existingFile) {
+                    // Re-save under the new ID
+                    await fileStorage.saveFile(serverFile.id, file);
+                    // Optionally delete the old entry (but keep it for safety)
+                    console.log(`📦 [STORAGE] Re-saved file under new server ID: ${oldId} → ${serverFile.id}`);
+                  }
+                } catch (storageError) {
+                  console.warn('[STORAGE] Failed to update fileStorage with new ID:', storageError);
+                }
+              }
+              
+              // Update file ID and name in local state to match server
+              setFiles((prev) => prev.map((f) => {
+                if (f.id === oldId) {
+                  const updated = {
+                    ...f,
+                    id: serverFile.id,
+                    name: serverFile.name,
+                  };
+                  if (oldName !== serverFile.name) {
+                    console.log(`📝 [UPLOAD] File renamed by server: "${oldName}" → "${serverFile.name}"`);
+                  }
+                  return updated;
+                }
+                return f;
+              }));
+              
+              // Also update the fileItem reference for auto-sharing later
+              fileItem.id = serverFile.id;
+              fileItem.name = serverFile.name;
+            }
+            
+            console.debug('[useVault] file uploaded to API', { fileId: fileItem.id, fileName: fileItem.name });
+          } catch (apiError) {
+            console.error('[useVault] Failed to upload file to API:', apiError);
+            // ✅ Remove the failed file from local state
+            setFiles((prev) => prev.filter((f) => f.id !== fileItem.id));
+            setStorageUsed((prev) => Math.max(0, prev - file.size));
           }
         } catch (error) {
           console.error('[useVault] Failed to store file via fileStorage:', error, { fileId: fileItem.id });
@@ -1212,17 +1558,16 @@ export function useVault(userEmail: string, userName?: string) {
       console.log(`📤 [UPLOAD] Target shared folder (parentFolderId for share entries): ${sharedParentFolderId}`);
 
       // 🔍 DEBUG: check if any recipient has the target folder in their trash
-      shareRecipients.forEach(email => {
+      for (const email of shareRecipients) {
         try {
-          const rtKey = `receiver_trashed_shares_${email}`;
-          const rtRaw = localStorage.getItem(rtKey);
-          const rtList: string[] = rtRaw ? JSON.parse(rtRaw) : [];
+          const rtResponse = await apiCall(`/api/shares/trashed?recipientEmail=${encodeURIComponent(email)}`);
+          const rtList: string[] = (rtResponse.data || []).map((t: any) => t.fileId);
           console.log(`🔍 [UPLOAD] receiver_trashed_shares for ${email}: ${JSON.stringify(rtList)}`);
           console.log(`   Target folder ${sharedParentFolderId} in their trash? ${rtList.includes(sharedParentFolderId!)}`);
         } catch (e) {
           console.error(`❌ [UPLOAD] Failed to read receiver_trashed_shares for ${email}`, e);
         }
-      });
+      }
       
       for (const newFile of newFiles) {
         for (const recipient of shareRecipients) {
@@ -1243,23 +1588,23 @@ export function useVault(userEmail: string, userName?: string) {
             }
             
             // ✅ CRITICAL FIX: Use sharedParentFolderId instead of newFile.parentFolderId
-            // This ensures files uploaded to a shared folder appear in the correct location for the recipient
             const parentIdForShare = sharedParentFolderId;
             
             console.log(`📤 [UPLOAD] Sharing "${newFile.name}" with parent: ${parentIdForShare}`);
             
-            await sharedFilesManager.shareFile(
-              newFile.id,
-              newFile.name,
-              newFile.size,
-              newFile.type,
-              shareOwner,
-              shareOwnerName,
-              recipient,
-              newFile.createdAt,
-              parentIdForShare, // ✅ FIX: Use the shared folder ID, not the local parent ID
-              fileData
-            );
+            // Share via API
+            await apiCall('/api/shares', {
+              method: 'POST',
+              body: JSON.stringify({
+                fileId: newFile.id,
+                fileName: newFile.name,
+                fileSize: newFile.size,
+                fileType: newFile.type,
+                recipientEmail: recipient,
+                parentFolderId: parentIdForShare,
+                fileData: fileData ? await fileData.text() : undefined // Convert Blob if needed
+              })
+            });
             
             console.log(`✅ [UPLOAD] Auto-shared "${newFile.name}" with ${recipient} (parent: ${parentIdForShare})`);
           } catch (error) {
@@ -1270,7 +1615,7 @@ export function useVault(userEmail: string, userName?: string) {
       
       // Trigger sync
       window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-      sharedFilesManager.triggerSync();
+      // Note: sharedFilesManager.triggerSync() removed - using API now
     }
 
     setTimeout(() => setUploadProgress([]), 500);
@@ -1280,8 +1625,9 @@ export function useVault(userEmail: string, userName?: string) {
   const handleCreateFolder = async (folderName: string) => {
     if (!ensureUser('handleCreateFolder')) return;
     const uniqueName = makeUniqueName(folderName, currentFolderId, true, false);
+    const tempId = Math.random().toString(36).substring(2, 11);
     const newFolder: FileItem = {
-      id: Math.random().toString(36).substring(2, 11),
+      id: tempId,
       name: uniqueName,
       size: 0,
       type: 'folder',
@@ -1294,7 +1640,40 @@ export function useVault(userEmail: string, userName?: string) {
       return [...prev, newFolder];
     });
 
+    // ✅ NEW: Persist folder to API and update with server-generated ID
+    let serverId: string | null = null;
+    try {
+      const response = await apiCall('/api/files/upload', {
+        method: 'POST',
+        body: JSON.stringify({
+          encryptedData: [],
+          iv: [],
+          wrappedKey: [],
+          fileName: newFolder.name,
+          mimeType: null,
+          size: 0,
+          parentFolderId: newFolder.parentFolderId,
+          isFolder: true
+        })
+      });
+      
+      // ✅ FIX: Update the folder ID with server-generated one
+      if (response.file?.id) {
+        serverId = response.file.id;
+        newFolder.id = serverId ?? newFolder.id; // Keep temp ID if serverId is somehow null
+        setFiles((prev) => prev.map(f => f.id === tempId ? { ...f, id: serverId ?? tempId } : f));
+        console.debug('[useVault] folder created in API', { tempId, serverId });
+      } else {
+        console.warn('[useVault] API response missing file ID, keeping temp ID');
+      }
+    } catch (apiError) {
+      console.error('[useVault] Failed to create folder in API:', apiError);
+      return; // Don't proceed with sharing if folder creation failed
+    }
+
     // ✅ FIX: Auto-share the new folder if parent is shared
+    // When inside someone else's shared folder: share WITH the folder owner
+    // When inside our own shared folder: share with existing recipients
     let shareRecipients: string[] = [];
     let shareOwner: string | undefined;
     let shareOwnerName: string | undefined;
@@ -1304,25 +1683,40 @@ export function useVault(userEmail: string, userName?: string) {
       const parentFolder = files.find(f => f.id === currentFolderId && f.type === 'folder');
       
       if (parentFolder) {
-        // Check if parent is a received shared folder
-        if (parentFolder.isSharedFile && parentFolder.owner && parentFolder.owner !== userEmail) {
-          // This is a received share - we need to share back to the original owner
+        // ✅ IMPROVED: Check if this is a RECEIVED shared folder (owned by someone else)
+        // Use multiple checks for robustness
+        const isReceivedFolder = (
+          (parentFolder as any).isReceivedShare ||
+          (parentFolder.isSharedFile && parentFolder.owner && parentFolder.owner.toLowerCase() !== userEmail?.toLowerCase()) ||
+          (parentFolder.owner && parentFolder.owner.toLowerCase() !== userEmail?.toLowerCase())
+        );
+        
+        if (isReceivedFolder && parentFolder.owner) {
+          // Share the new folder WITH the folder owner so they can see it
           shareRecipients = [parentFolder.owner];
           shareOwner = userEmail;
           shareOwnerName = userName;
           sharedParentFolderId = currentFolderId;
           
-          console.log(`📤 [CREATE_FOLDER] Parent is shared folder from ${parentFolder.owner}, will auto-share back`);
+          console.log(`📤 [CREATE_FOLDER] Parent is received shared folder from ${parentFolder.owner} - will share new folder WITH owner`);
         } else {
           // Check if parent is owned by us and shared with others
-          const recipients = sharedFilesManager.getShareRecipients(currentFolderId);
-          if (recipients.length > 0) {
-            shareRecipients = recipients;
-            shareOwner = userEmail;
-            shareOwnerName = userName;
-            sharedParentFolderId = currentFolderId;
-            
-            console.log(`📤 [CREATE_FOLDER] Parent is our shared folder, will auto-share with ${recipients.length} recipients`);
+          try {
+            const recipientsResponse = await apiCall('/api/shares/recipients', {
+              method: 'POST',
+              body: JSON.stringify({ fileId: currentFolderId })
+            });
+            const recipients = recipientsResponse.recipients || [];
+            if (recipients.length > 0) {
+              shareRecipients = recipients;
+              shareOwner = userEmail;
+              shareOwnerName = userName;
+              sharedParentFolderId = currentFolderId;
+              
+              console.log(`📤 [CREATE_FOLDER] Parent is our shared folder, will auto-share with ${recipients.length} recipients`);
+            }
+          } catch (e) {
+            console.error('Failed to fetch recipients:', e);
           }
         }
       }
@@ -1334,18 +1728,17 @@ export function useVault(userEmail: string, userName?: string) {
       
       for (const recipient of shareRecipients) {
         try {
-          await sharedFilesManager.shareFile(
-            newFolder.id,
-            newFolder.name,
-            newFolder.size,
-            newFolder.type,
-            shareOwner,
-            shareOwnerName,
-            recipient,
-            newFolder.createdAt,
-            sharedParentFolderId, // Preserve hierarchy
-            undefined // No file data for folders
-          );
+          await apiCall('/api/shares', {
+            method: 'POST',
+            body: JSON.stringify({
+              fileId: newFolder.id,
+              fileName: newFolder.name,
+              fileSize: newFolder.size,
+              fileType: newFolder.type,
+              recipientEmail: recipient,
+              parentFolderId: sharedParentFolderId
+            })
+          });
           
           console.log(`✅ [CREATE_FOLDER] Auto-shared "${uniqueName}" with ${recipient} (parent: ${sharedParentFolderId})`);
         } catch (error) {
@@ -1355,20 +1748,13 @@ export function useVault(userEmail: string, userName?: string) {
       
       // Trigger sync
       window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-      sharedFilesManager.triggerSync();
     }
   };
 
   // ─── rename ─────────────────────────────────────────────────────────
-  const handleRenameFile = (id: string, newName: string) => {
-    // ✅ FIX 7: Prevent renaming files in trash
+  const handleRenameFile = async (id: string, newName: string) => {
     const isInTrash = deletedFiles.some(f => f.id === id);
-    if (isInTrash) {
-      console.warn('⚠️ Cannot rename files in trash');
-      return;
-    }
 
-    // First check if file is in trash
     const trashFile = deletedFiles.find((f) => f.id === id);
     const activeFile = files.find((f) => f.id === id);
     
@@ -1379,9 +1765,34 @@ export function useVault(userEmail: string, userName?: string) {
     }
     if (!ensureUser('handleRenameFile')) return;
 
-    const isShared = sharedFilesManager.getShareRecipients(id).length > 0;
-    const isOwner = file.owner === userEmail;
-    const isReceivedShare = file.isSharedFile && file.owner !== userEmail;
+    const isReceivedShare = file.isSharedFile && !emailsMatch(file.owner, userEmail);
+
+    // ✅ FIX: Only block renaming OWNER's files in trash - receivers CAN rename shared files in their trash
+    if (isInTrash && !isReceivedShare) {
+      console.warn('⚠️ Cannot rename your own files in trash');
+      return;
+    }
+
+    // Fetch share recipients from API (with fallback to local state)
+    let shareRecipients: string[] = [];
+    try {
+      const recipientsResponse = await apiCall('/api/shares/recipients', {
+        method: 'POST',
+        body: JSON.stringify({ fileId: id })
+      });
+      shareRecipients = recipientsResponse.recipients || [];
+    } catch (e) {
+      console.error('Failed to fetch recipients:', e);
+    }
+    
+    // ✅ FIX: Fallback to local sharedWith if API failed
+    if (shareRecipients.length === 0 && file.sharedWith && file.sharedWith.length > 0) {
+      console.log('[RENAME] Using local sharedWith as fallback');
+      shareRecipients = file.sharedWith;
+    }
+    
+    const isShared = shareRecipients.length > 0;
+    const isOwner = emailsMatch(file.owner, userEmail);
 
     console.log(`[RENAME] Starting rename for file ${id}:`, {
       currentName: file.name,
@@ -1399,28 +1810,27 @@ export function useVault(userEmail: string, userName?: string) {
       console.log(`[RENAME] CASE 1: Receiver renaming shared file (in trash: ${isInTrash})`);
       
       try {
-        const success = sharedFilesManager.updateSharedFileName(id, newName);
-        console.log(`[RENAME] SharedFilesManager update result: ${success}`);
+        await apiCall('/api/shares', {
+          method: 'PATCH',
+          body: JSON.stringify({ fileId: id, fileName: newName })
+        });
+        console.log(`[RENAME] API update successful`);
         
-        if (success) {
-          console.log(`✏️ [RENAME] Receiver renamed shared file ${id} to: ${newName} (propagated to sender)`);
-          
-          // Update the file in the appropriate state
-          if (isInTrash) {
-            console.log(`[RENAME] Updating deletedFiles state for receiver's trash`);
-            setDeletedFiles((prev) => prev.map((f) => (f.id === id ? { ...f, name: newName } : f)));
-          } else {
-            console.log(`[RENAME] File is in receiver's active vault - sync will handle update`);
-          }
-          
-          setTimeout(() => {
-            console.log('[RENAME] Triggering sync after receiver rename');
-            syncSharedFiles();
-            window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-          }, 100);
+        console.log(`✏️ [RENAME] Receiver renamed shared file ${id} to: ${newName} (propagated to sender)`);
+        
+        // Update the file in the appropriate state
+        if (isInTrash) {
+          console.log(`[RENAME] Updating deletedFiles state for receiver's trash`);
+          setDeletedFiles((prev) => prev.map((f) => (f.id === id ? { ...f, name: newName } : f)));
         } else {
-          console.error('[RENAME] Failed to update shared file name in metadata');
+          console.log(`[RENAME] File is in receiver's active vault - sync will handle update`);
         }
+        
+        setTimeout(() => {
+          console.log('[RENAME] Triggering sync after receiver rename');
+          syncSharedFiles();
+          window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+        }, 100);
       } catch (e) {
         console.error('[RENAME] Failed to propagate receiver rename to shared entries', e);
       }
@@ -1450,24 +1860,34 @@ export function useVault(userEmail: string, userName?: string) {
         console.log(`[RENAME] ✅ File is in SENDER's VAULT - updating files state`);
         setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, name: uniqueName } : f)));
         
+        // Update via API
+        try {
+          await apiCall(`/api/files/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ name: uniqueName })
+          });
+          console.log('[RENAME] File renamed in API');
+        } catch (apiError) {
+          console.error('[RENAME] Failed to rename file in API:', apiError);
+        }
+        
         // ONLY propagate rename if file is NOT in trash
         if (isShared) {
           console.log(`[RENAME] 📡 File is shared - will propagate to receivers`);
           try {
-            const updateSuccess = sharedFilesManager.updateSharedFileName(id, uniqueName);
-            console.log(`[RENAME] SharedFilesManager update result: ${updateSuccess}`);
+            await apiCall('/api/shares', {
+              method: 'PATCH',
+              body: JSON.stringify({ fileId: id, fileName: uniqueName })
+            });
+            console.log(`[RENAME] API update successful`);
             
-            if (updateSuccess) {
-              console.log(`✏️ [RENAME] Sender renamed shared file ${id} to: ${uniqueName} (propagated to receivers)`);
-              
-              // Trigger sync so receivers see the change
-              setTimeout(() => {
-                console.log(`[RENAME] 🔔 Triggering cross-tab sync for rename propagation`);
-                window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-              }, 100);
-            } else {
-              console.error('[RENAME] Failed to update shared metadata');
-            }
+            console.log(`✏️ [RENAME] Sender renamed shared file ${id} to: ${uniqueName} (propagated to receivers)`);
+            
+            // Trigger sync so receivers see the change
+            setTimeout(() => {
+              console.log(`[RENAME] 🔔 Triggering cross-tab sync for rename propagation`);
+              window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+            }, 100);
           } catch (e) {
             console.error('[RENAME] Failed to propagate sender rename to shared entries', e);
           }
@@ -1482,8 +1902,8 @@ export function useVault(userEmail: string, userName?: string) {
     console.warn('[RENAME] Unexpected rename scenario - no action taken');
   };
 
-// ─── delete ─────────────────────────────────────────────────────
-  const handleDeleteFile = (id: string) => {
+  // ─── delete ─────────────────────────────────────────────────────────
+  const handleDeleteFile = async (id: string) => {
     const file = files.find((f) => f.id === id);
     if (!file) return;
     
@@ -1518,99 +1938,56 @@ export function useVault(userEmail: string, userName?: string) {
       if (file.type === 'folder') {
         const descendants = getAllDescendants(file.id);
         itemsToDelete = itemsToDelete.concat(descendants);
-        console.log(`🗑️ [DELETE] Deleting shared folder with ${descendants.length} items inside`);
       }
       
-      
-      // ✅ NEW FIX: DON'T unshare - instead add to receiver_trashed_shares
-      // This keeps the share relationship intact so new content goes into the same folder
-      try {
-        const receiverTrashedKey = `receiver_trashed_shares_${userEmail}`;
-        const existingData = localStorage.getItem(receiverTrashedKey);
-        let receiverTrashedList: string[] = existingData ? JSON.parse(existingData) : [];
-        
-        for (const item of itemsToDelete) {
-          if (!receiverTrashedList.includes(item.id)) {
-            receiverTrashedList.push(item.id);
-            console.log(`   ✅ Added ${item.id} ("${item.name}") to receiver_trashed_shares`);
-          }
-        }
-        
-        devLog(`🕒 [DELETE] Writing receiver_trashed_shares for ${userEmail} — count: ${receiverTrashedList.length}`);
-        localStorage.setItem(receiverTrashedKey, JSON.stringify(receiverTrashedList));
-        devLog(`🕒 [DELETE] Written receiver_trashed_shares for ${userEmail} — count: ${receiverTrashedList.length}`);
-        console.log(`✅ [DELETE] Added ${itemsToDelete.length} items to receiver_trashed_shares (share relationship intact)`);
-      } catch (e) {
-        console.error('❌ [DELETE] Failed to add to receiver_trashed_shares', e);
-      }
-
-      // ✅ FIX 3: Enhanced tombstone creation with detailed logging
-      console.log('🗑️ [DELETE] Creating tombstones for receiver-deleted shared files:', {
-        itemCount: itemsToDelete.length,
-        items: itemsToDelete.map(i => ({ id: i.id, name: i.name, type: i.type }))
-      });
-
-      const tombstones = itemsToDelete.map(item => {
-        const tombstone = {
-          id: item.id,
-          name: item.name,
-          size: item.size,
-          type: item.type,
-          createdAt: new Date(),
-          parentFolderId: item.parentFolderId, // Preserve hierarchy in trash
-          originalParentId: item.parentFolderId,
-          originalSharedId: item.id, // ✅ CRITICAL: Mark this as a shared file tombstone
-          sharedMeta: {
-            ownerId: item.owner,
-            ownerName: (item as any).ownerName || undefined,
-            fileSize: item.size,
-            fileType: item.type,
-            originalCreatedAt: item.createdAt,
-          } as any,
-        } as any;
-        
-        console.log(`   📋 Tombstone created for "${item.name}":`, {
-          id: tombstone.id,
-          hasSharedMeta: !!tombstone.sharedMeta,
-          hasOriginalSharedId: !!tombstone.originalSharedId,
-          parentFolderId: tombstone.parentFolderId
-        });
-        
-        return tombstone;
-      });
-
-      setFiles((prev) => prev.filter((f) => !itemsToDelete.some(d => d.id === f.id)));
-      setDeletedFiles((prev) => {
-        const merged = [...prev, ...tombstones];
-        try {
-          const map = new Map<string, any>();
-          for (const t of merged) map.set(t.id, t);
-          const deduped = Array.from(map.values());
-          if (deduped.length !== merged.length) console.log(`🧹 [DELETE] Deduped tombstones: ${merged.length} -> ${deduped.length}`);
-          try { localStorage.setItem(`trash_${userEmail}`, JSON.stringify(deduped)); } catch (e) { /* ignore */ }
-          return deduped;
-        } catch (e) {
-          console.warn('⚠️ [DELETE] Failed deduping tombstones', e);
-          return merged;
-        }
-      });
+      // ✅ OPTIMISTIC UI: Build tombstones and update UI IMMEDIATELY
+      const tombstones = itemsToDelete.map(item => ({
+        id: item.id,
+        name: item.name,
+        size: item.size,
+        type: item.type,
+        createdAt: new Date(),
+        parentFolderId: item.parentFolderId,
+        originalParentId: item.parentFolderId,
+        originalSharedId: item.id,
+        sharedMeta: {
+          ownerId: item.owner,
+          ownerName: (item as any).ownerName || undefined,
+          fileSize: item.size,
+          fileType: item.type,
+          originalCreatedAt: item.createdAt,
+        } as any,
+      } as any));
 
       // Calculate total size
       const totalSize = itemsToDelete.reduce((sum, item) => {
         return sum + (item.type === 'file' ? item.size : 0);
       }, 0);
-      
+
+      // ✅ OPTIMISTIC: Update UI first (instant feedback)
+      setFiles((prev) => prev.filter((f) => !itemsToDelete.some(d => d.id === f.id)));
+      setDeletedFiles((prev) => {
+        const merged = [...prev, ...tombstones];
+        const map = new Map<string, any>();
+        for (const t of merged) map.set(t.id, t);
+        return Array.from(map.values());
+      });
       setStorageUsed((prev) => Math.max(0, prev - totalSize));
+      console.log('✅ [DELETE] UI updated (optimistic) - receiver trash');
 
-      console.log('🕒 [DELETE] Tombstones persisted to state at', new Date().toISOString());
-      console.log('✅ [DELETE] Receiver tombstones created in trash:', tombstones.length);
-
-      // 🔍 DEBUG: dump the final receiver_trashed_shares so we can verify it persisted
-      try {
-        const debugRtKey = `receiver_trashed_shares_${userEmail}`;
-        const debugRtRaw = localStorage.getItem(debugRtKey);
-        console.log(`🔍 [DELETE] Final receiver_trashed_shares for ${userEmail}: ${debugRtRaw}`);
-      } catch (e) { /* ignore */ }
+      // ✅ BACKGROUND: Run API calls without blocking UI
+      (async () => {
+        try {
+          for (const item of itemsToDelete) {
+            await apiCall('/api/shares/trashed', {
+              method: 'POST',
+              body: JSON.stringify({ shareId: item.id, fileId: item.id })
+            });
+          }
+        } catch (e) {
+          console.error('❌ [DELETE] Failed to add to receiver_trashed_shares', e);
+        }
+      })();
 
       return;
     }
@@ -1633,50 +2010,7 @@ export function useVault(userEmail: string, userName?: string) {
       toDelete = toDelete.concat(getAllDescendants(file.id));
     }
 
-    // ✅ FIX: Process ALL files being deleted (including folder children)
-    toDelete.forEach(item => {
-      const isShared = sharedFilesManager.getShareRecipients(item.id).length > 0;
-      console.log('🗑️ [DELETE] SENDER deleting file, isShared:', isShared, 'file:', item.name);
-      
-      if (isShared && item.owner === userEmail) {
-        try {
-          const recipients = sharedFilesManager.getShareRecipients(item.id);
-          console.log('⏳ [DELETE] Marking file as temporarily deleted for receivers:', recipients);
-          
-          recipients.forEach(recipientEmail => {
-            const key = `temp_deleted_shares_${recipientEmail}`;
-            const existing = localStorage.getItem(key);
-            const deletedList = existing ? JSON.parse(existing) : [];
-            if (!deletedList.includes(item.id)) {
-              deletedList.push(item.id);
-              devLog(`⏳ [DELETE] Writing temp_deleted_shares for ${recipientEmail} — adding ${item.id}`);
-              localStorage.setItem(key, JSON.stringify(deletedList));
-              devLog(`⏳ [DELETE] Wrote temp_deleted_shares for ${recipientEmail} — new count ${deletedList.length}`);
-            }
-          });
-          
-          console.log(`✅ [DELETE] Temporarily hiding shared file ${item.id} from receivers`);
-        } catch (e) {
-          console.error('❌ [DELETE] Failed to mark shared file as temporarily deleted', e);
-        }
-      }
-    });
-
-    // Trigger sync for receivers ONCE after processing all files
-    const hasSharedFiles = toDelete.some(item => 
-      sharedFilesManager.getShareRecipients(item.id).length > 0 && item.owner === userEmail
-    );
-    
-    if (hasSharedFiles) {
-      try {
-        sharedFilesManager.triggerSync();
-        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-        console.log('🔔 [DELETE] Triggered sync for receivers');
-      } catch (e) {
-        console.error('Failed to trigger storage event', e);
-      }
-    }
-
+    // ✅ OPTIMISTIC UI: Build deleted items and update UI IMMEDIATELY
     const deletedItems = toDelete.map((item) => {
       const parentInTrash = item.parentFolderId && toDelete.some(d => d.id === item.parentFolderId)
         ? item.parentFolderId
@@ -1699,13 +2033,66 @@ export function useVault(userEmail: string, userName?: string) {
       };
     });
 
-    setDeletedFiles([...deletedFiles, ...deletedItems]);
-    setFiles(files.filter((f) => !toDelete.some(d => d.id === f.id)));
+    // ✅ OPTIMISTIC: Update UI first (instant feedback)
+    setDeletedFiles((prev) => [...prev, ...deletedItems]);
+    setFiles((prev) => prev.filter((f) => !toDelete.some(d => d.id === f.id)));
     setSelectedFiles(new Set());
-    console.log('✅ [DELETE] File moved to trash');
+    console.log('✅ [DELETE] UI updated (optimistic)');
+
+    // ✅ BACKGROUND: Run API calls without blocking UI
+    (async () => {
+      try {
+        for (const item of toDelete) {
+          // Fetch recipients from API
+          let recipients: string[] = [];
+          try {
+            const recipientsResponse = await apiCall('/api/shares/recipients', {
+              method: 'POST',
+              body: JSON.stringify({ fileId: item.id })
+            });
+            recipients = recipientsResponse.recipients || [];
+          } catch (e) {
+            console.error('Failed to fetch recipients:', e);
+          }
+          
+          const isShared = recipients.length > 0;
+          
+          if (isShared && emailsMatch(item.owner, userEmail)) {
+            try {
+              // Mark as temp deleted via API
+              await apiCall('/api/shares/temp-deleted', {
+                method: 'POST',
+                body: JSON.stringify({
+                  fileIds: [item.id],
+                  recipientEmails: recipients,
+                  isTrashed: true
+                })
+              });
+            } catch (e) {
+              console.error('❌ [DELETE] Failed to mark shared file as temporarily deleted', e);
+            }
+          }
+          
+          // Move to trash via API
+          try {
+            await apiCall('/api/trash/move', {
+              method: 'POST',
+              body: JSON.stringify({ fileIds: [item.id] })
+            });
+          } catch (apiError) {
+            console.error('[DELETE] Failed to move to trash in API:', apiError);
+          }
+        }
+
+        // Trigger sync for receivers
+        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+      } catch (e) {
+        console.error('❌ [DELETE] Background API calls failed:', e);
+      }
+    })();
   };
 
-  // ─── restore ────────────────────────────────────────────────────────
+// ─── restore ────────────────────────────────────────────────────────
   const handleRestoreFile = async (id: string) => {
     const file = deletedFiles.find((f) => f.id === id);
     if (!file) return;
@@ -1732,53 +2119,45 @@ export function useVault(userEmail: string, userName?: string) {
     // SCENARIO 1: If the sender is restoring their own shared file (moving out of trash),
     // clear any temporary-hidden markers so receivers see it again (auto re-share).
     try {
-      if (file.owner === userEmail) {
-        const recipients = sharedFilesManager.getShareRecipients(id);
+      if (emailsMatch(file.owner, userEmail)) {
+        // Fetch recipients from API
+        let recipients: string[] = [];
+        try {
+          const recipientsResponse = await apiCall('/api/shares/recipients', {
+            method: 'POST',
+            body: JSON.stringify({ fileId: id })
+          });
+          recipients = recipientsResponse.recipients || [];
+        } catch (e) {
+          console.error('Failed to fetch recipients:', e);
+        }
+        
         console.log('♻️ [RESTORE] SENDER restoring, checking if shared. Recipients:', recipients);
         
         if (recipients.length > 0) {
           console.log('📤 [RESTORE] Auto re-sharing file to receivers after restore');
           console.log(`📦 [RESTORE] Total items to restore: ${toRestore.length}`);
           
-          // ✅ CRITICAL FIX: Remove ALL items (parent + descendants) from temp_deleted
-          recipients.forEach((recipientEmail) => {
-            const key = `temp_deleted_shares_${recipientEmail}`;
-            const existing = localStorage.getItem(key);
-            
-            if (existing) {
-              const deletedList = JSON.parse(existing);
-              console.log(`🔍 [RESTORE] Before cleanup for ${recipientEmail}:`, deletedList);
-              
-              // Remove ALL restored items from the temp_deleted list
-              const idsToRemove = toRestore.map(item => item.id);
-              const filtered = deletedList.filter((fileId: string) => !idsToRemove.includes(fileId));
-              
-              console.log(`🧹 [RESTORE] Removing ${idsToRemove.length} IDs:`, idsToRemove);
-              console.log(`🔍 [RESTORE] After cleanup:`, filtered);
-              
-              if (filtered.length > 0) {
-                devLog(`🕒 [RESTORE] Writing temp_deleted_shares for ${recipientEmail} — removing ${idsToRemove.length} ids`);
-                localStorage.setItem(key, JSON.stringify(filtered));
-                devLog(`✅ [RESTORE] Wrote temp_deleted_shares for ${recipientEmail} — new count ${filtered.length}`);
-              } else {
-                devLog(`🕒 [RESTORE] Removing temp_deleted_shares key for ${recipientEmail} (all cleared)`);
-                localStorage.removeItem(key);
-              }
-              
-              console.log(`✅ [RESTORE] Cleaned temp_deleted list for ${recipientEmail}`);
-            }
-          });
+          // ✅ CRITICAL FIX: Remove ALL items (parent + descendants) from temp_deleted via API
+          const idsToRemove = toRestore.map(item => item.id);
+          
+          try {
+            await apiCall('/api/shares/temp-deleted', {
+              method: 'POST',
+              body: JSON.stringify({
+                fileIds: idsToRemove,
+                recipientEmails: recipients,
+                isTrashed: false
+              })
+            });
+            console.log(`✅ [RESTORE] Cleaned temp_deleted list for all recipients`);
+          } catch (e) {
+            console.error('❌ [RESTORE] Failed to clean temp_deleted via API:', e);
+          }
 
           // Notify other tabs/components
           window.dispatchEvent(new Event(SHARED_FILES_EVENT));
           console.log('✅ [RESTORE] Auto re-shared file to all receivers');
-          
-          // Force storage event for cross-tab sync
-          try {
-            sharedFilesManager.triggerSync();
-          } catch (e) {
-            console.error('Failed to trigger storage event', e);
-          }
         }
       }
     } catch (e) {
@@ -1790,54 +2169,30 @@ export function useVault(userEmail: string, userName?: string) {
     // so that recreating the share entry is not blocked by the re-share guard.
     try {
       const idsBeingRestored = toRestore.map(i => (i as any).originalSharedId || i.id);
-      const rtKey = `receiver_trashed_shares_${userEmail}`;
-      const rtRaw = localStorage.getItem(rtKey);
-      if (rtRaw) {
-        const rtList: string[] = JSON.parse(rtRaw);
-        const cleaned = rtList.filter(id => !idsBeingRestored.includes(id));
-        console.log('♻️ [RESTORE] Cleaning receiver_trashed_shares before recreating shares. Before:', rtList, 'After:', cleaned);
-        if (cleaned.length > 0) {
-          localStorage.setItem(rtKey, JSON.stringify(cleaned));
-        } else {
-          localStorage.removeItem(rtKey);
+      
+      // Clean receiver_trashed_shares via API
+      for (const itemId of idsBeingRestored) {
+        try {
+          await apiCall('/api/shares/trashed', {
+            method: 'DELETE',
+            body: JSON.stringify({ fileId: itemId })
+          });
+          console.log(`♻️ [RESTORE] Removed ${itemId} from receiver_trashed_shares`);
+        } catch (e) {
+          console.error(`Failed to remove ${itemId} from receiver_trashed_shares:`, e);
         }
-        console.log('🕒 [RESTORE] Completed receiver_trashed_shares cleanup —', new Date().toISOString());
       }
+      console.log('🕒 [RESTORE] Completed receiver_trashed_shares cleanup —', new Date().toISOString());
 
-      // Now recreate share entries for any restored tombstones that had sharedMeta
+      // ✅ NOTE: Receiver does NOT need to recreate share entries
+      // The share still exists in the database - we just removed the "trashed" marker
+      // Triggering sync will re-fetch the share from the API
       for (const item of toRestore) {
         if ((item as any).sharedMeta && (item as any).sharedMeta.ownerId) {
-          const meta = (item as any).sharedMeta;
-          console.log('♻️ [RESTORE] RECEIVER restoring tombstone, recreating share entry');
-          try {
-            const recreateArgs = {
-              id: item.id,
-              name: item.name,
-              size: item.size || 0,
-              type: item.type || 'file',
-              ownerId: meta.ownerId,
-              ownerName: meta.ownerName || meta.ownerId,
-              recipient: userEmail,
-              originalCreatedAt: new Date(meta.originalCreatedAt || item.createdAt)
-            };
-            console.log('   🔁 [RESTORE] Recreating share with args:', recreateArgs, ' — ', new Date().toISOString());
-
-            await sharedFilesManager.shareFile(
-              item.id,
-              item.name,
-              item.size || 0,
-              item.type || 'file',
-              meta.ownerId,
-              meta.ownerName || meta.ownerId,
-              userEmail,
-              new Date(meta.originalCreatedAt || item.createdAt)
-            );
-
-            window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-            console.log('✅ [RESTORE] Recreated share entry for receiver —', new Date().toISOString());
-          } catch (e) {
-            console.error('❌ [RESTORE] Failed to recreate share on restore', e);
-          }
+          console.log('♻️ [RESTORE] RECEIVER restoring tombstone - syncing to re-fetch share');
+          // Just trigger sync - the share entry still exists on the server (sender owns it)
+          window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+          break; // Only need to trigger once
         }
       }
     } catch (e) {
@@ -1845,10 +2200,6 @@ export function useVault(userEmail: string, userName?: string) {
     }
 
     // ── RECEIVER restoring a shared folder: unlock pending items ────────────
-    // Strip the restored IDs out of receiver_trashed_shares.  Any new files the
-    // sender added while the folder was trashed are sitting in shared_files_global
-    // doing nothing.  Once we remove the folder from this list the next sync will
-    // see them as visible and deliver them into files naturally.
     try {
       const isReceiverRestoringShared = toRestore.some(item =>
         (item as any).sharedMeta || (item as any).originalSharedId ||
@@ -1856,44 +2207,33 @@ export function useVault(userEmail: string, userName?: string) {
       );
 
       if (isReceiverRestoringShared) {
-        const rtKey = `receiver_trashed_shares_${userEmail}`;
-        const rtRaw = localStorage.getItem(rtKey);
+        const idsBeingRestored = toRestore.map(i => (i as any).originalSharedId || i.id);
+        console.log(`♻️  [RESTORE] Cleaning receiver_trashed_shares via API`);
+        console.log(`   IDs being restored: ${JSON.stringify(idsBeingRestored)}`);
 
-        if (rtRaw) {
-          const rtList: string[] = JSON.parse(rtRaw);
-          const idsBeingRestored = new Set(toRestore.map(i => (i as any).originalSharedId || i.id));
-          console.log(`♻️  [RESTORE] Cleaning receiver_trashed_shares. Before: ${JSON.stringify(rtList)}`);
-          console.log(`   IDs being restored: ${JSON.stringify([...idsBeingRestored])}`);
-
-          const cleaned = rtList.filter(id => !idsBeingRestored.has(id));
-
-          console.log(`🕒 [RESTORE] Writing receiver_trashed_shares for ${userEmail} — ${new Date().toISOString()}`);
-          if (cleaned.length > 0) {
-            localStorage.setItem(rtKey, JSON.stringify(cleaned));
-          } else {
-            localStorage.removeItem(rtKey);
+        // Clean via API
+        for (const itemId of idsBeingRestored) {
+          try {
+            await apiCall('/api/shares/trashed', {
+              method: 'DELETE',
+              body: JSON.stringify({ fileId: itemId })
+            });
+          } catch (e) {
+            console.error(`Failed to remove ${itemId}:`, e);
           }
-          console.log(`🕒 [RESTORE] Completed receiver_trashed_shares write for ${userEmail} — ${new Date().toISOString()}`);
-
-          console.log(`♻️  [RESTORE] After cleanup: ${JSON.stringify(cleaned)}`);
-          console.log(`♻️  [RESTORE] Triggering sync — pending items will now be delivered.`);
-
-          // Kick sync so pending shared items flow into files
-          window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-          sharedFilesManager.triggerSync();
         }
+
+        console.log(`🕒 [RESTORE] Completed receiver_trashed_shares write — ${new Date().toISOString()}`);
+        console.log(`♻️  [RESTORE] Triggering sync — pending items will now be delivered.`);
+
+        // Kick sync so pending shared items flow into files
+        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
       }
     } catch (e) {
       console.error('❌ [RESTORE] Failed to clean receiver_trashed_shares', e);
     }
 
-    // ✅ FIX 6: Increase storage for received shares when restored
-    toRestore.forEach(item => {
-      if ((item as any).isReceivedShare && item.type !== 'folder') {
-        console.log(`📈 [RESTORE] Adding received share back to storage: +${item.size} bytes`);
-        setStorageUsed((prev) => prev + item.size);
-      }
-    });
+    // NOTE: Storage update moved to single location in setFiles to avoid spike
 
     const restoredItems = toRestore.map((item) => {
       let targetParent = item.originalParentId || null;
@@ -1919,11 +2259,11 @@ export function useVault(userEmail: string, userName?: string) {
       };
     });
 
+    // ✅ OPTIMISTIC UI: Update state immediately
     setFiles((prev) => {
       const existingIds = new Set(prev.map(f => f.id));
       const toAdd = restoredItems.filter(f => !existingIds.has(f.id));
       
-      // ✅ FIX: Only increase storage for NON-received shares (received shares already handled above at line 1836-1842)
       const restoredSize = toAdd.reduce((acc, f) => {
         const isReceivedShare = (f as any).isReceivedShare || (f as any).sharedMeta || (f as any).originalSharedId;
         if (f.type === 'file' && !isReceivedShare) {
@@ -1933,14 +2273,39 @@ export function useVault(userEmail: string, userName?: string) {
       }, 0);
       
       if (restoredSize > 0) {
-        console.log(`📦 [RESTORE] Increasing storageUsed by ${restoredSize} for restored items (excluding received shares)`);
         setStorageUsed((prev) => prev + restoredSize);
       }
       return [...prev, ...toAdd];
     });
     setDeletedFiles((prev) => prev.filter((f) => !toRestore.some(r => r.id === f.id)));
     setSelectedFiles(new Set());
-    console.log('✅ [RESTORE] File restored from trash');
+    console.log('✅ [RESTORE] UI updated (optimistic)');
+
+    // ✅ BACKGROUND: Run API calls without blocking UI (only for files we OWN)
+    (async () => {
+      try {
+        // ✅ FIX: Only restore files that user OWNS (not shared tombstones)
+        const ownedFilesToRestore = toRestore.filter(f => {
+          const isReceiverTombstone = (f as any).sharedMeta || (f as any).originalSharedId || 
+            (f.isSharedFile && f.owner && !emailsMatch(f.owner, userEmail));
+          if (isReceiverTombstone) {
+            console.log(`⏭️ [RESTORE] Skipping API restore for shared tombstone: ${f.name}`);
+            return false;
+          }
+          return true;
+        });
+        
+        if (ownedFilesToRestore.length > 0) {
+          await apiCall('/api/trash/restore', {
+            method: 'POST',
+            body: JSON.stringify({ fileIds: ownedFilesToRestore.map(f => f.id) })
+          });
+          console.log(`✅ [RESTORE] Restored ${ownedFilesToRestore.length} owned files via API`);
+        }
+      } catch (e) {
+        console.error('❌ [RESTORE] Failed to restore in API:', e);
+      }
+    })();
   };
 
   const handleRestoreFiles = (ids: string[]) => {
@@ -1973,215 +2338,138 @@ export function useVault(userEmail: string, userName?: string) {
 
     // ✅ FIX 2: Improved check for receiver-deleted shared files
     const isReceiverDeletingSharedFile = 
-      !!(file as any).sharedMeta ||  // Tombstone has sharedMeta
-      !!(file as any).originalSharedId ||  // Tombstone has originalSharedId
-      (file.isSharedFile && file.owner && file.owner !== userEmail);  // Active shared file
+      !!(file as any).sharedMeta ||
+      !!(file as any).originalSharedId ||
+      (file.isSharedFile && file.owner && file.owner !== userEmail);
 
-    console.log('💥 [PERM_DELETE] Checking if receiver deleting shared file:', {
-      fileId: file.id,
-      fileName: file.name,
-      hasSharedMeta: !!(file as any).sharedMeta,
-      hasOriginalSharedId: !!(file as any).originalSharedId,
-      isSharedFile: file.isSharedFile,
-      fileOwner: file.owner,
-      currentUser: userEmail,
-      ownerMismatch: file.owner !== userEmail,
-      finalDecision: isReceiverDeletingSharedFile
-    });
-
-    // SCENARIO 1: Receiver permanently deleting a shared item
-    // Add to permanent hidden list so it never comes back until re-shared
-    if (isReceiverDeletingSharedFile) {
-      console.log('💥 [PERM_DELETE] RECEIVER permanently deleting shared file');
-      
-      try {
-        const hiddenKey = `hidden_shares_${userEmail}`;
-        const existingHidden = localStorage.getItem(hiddenKey);
-        const hiddenList: string[] = existingHidden ? JSON.parse(existingHidden) : [];
-        
-        // ✅ FIX 4: Enhanced permanent delete logging
-        toDelete.forEach(item => {
-          const itemId = (item as any).originalSharedId || item.id;
-          console.log(`   🔍 Processing item for hiding:`, {
-            itemName: item.name,
-            itemId: item.id,
-            originalSharedId: (item as any).originalSharedId,
-            useId: itemId,
-            alreadyHidden: hiddenList.includes(itemId)
-          });
-          
-          if (!hiddenList.includes(itemId)) {
-            hiddenList.push(itemId);
-            console.log(`   ✅ Added ${itemId} ("${item.name}") to permanent hidden list`);
-          } else {
-            console.log(`   ⏭️ ${itemId} ("${item.name}") already in hidden list`);
-          }
-        });
-        
-        console.log(`🚫 [PERM_DELETE] Final hidden list (${hiddenList.length} items):`, hiddenList);
-        
-        localStorage.setItem(hiddenKey, JSON.stringify(hiddenList));
-        console.log('✅ [PERM_DELETE] Shared items permanently hidden');
-        
-        // ✅ ALSO remove from temp_deleted list (cleanup)
-        const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-        const existingTempDeleted = localStorage.getItem(tempDeletedKey);
-        if (existingTempDeleted) {
-          const tempDeletedList = JSON.parse(existingTempDeleted);
-          const idsToRemove = toDelete.map(item => (item as any).originalSharedId || item.id);
-          const filtered = tempDeletedList.filter((id: string) => !idsToRemove.includes(id));
-          
-          if (filtered.length > 0) {
-            localStorage.setItem(tempDeletedKey, JSON.stringify(filtered));
-          } else {
-            localStorage.removeItem(tempDeletedKey);
-          }
-          console.log('🧹 [PERM_DELETE] Cleaned temp_deleted list');
-        }
-        
-        // ✅ NEW FIX: Remove share entries from registry when receiver permanently deletes
-        console.log('🗑️ [PERM_DELETE] Removing share entries from registry...');
-        toDelete.forEach(item => {
-          const shareId = (item as any).originalSharedId || item.id;
-          const recipients = sharedFilesManager.getShareRecipients(shareId);
-          
-          if (recipients.includes(userEmail)) {
-            console.log(`   🗑️ Unsharing ${item.name} (${shareId}) from ${userEmail}`);
-            sharedFilesManager.unshareFile(shareId, userEmail);
-          }
-        });
-        console.log('✅ [PERM_DELETE] Share entries removed from registry');
-
-        // Also remove from receiver_trashed_shares
-        try {
-          const receiverTrashedKey = `receiver_trashed_shares_${userEmail}`;
-          const existingData = localStorage.getItem(receiverTrashedKey);
-          if (existingData) {
-            let receiverTrashedList: string[] = JSON.parse(existingData);
-            const idsToRemove = toDelete.map(item => (item as any).originalSharedId || item.id);
-            receiverTrashedList = receiverTrashedList.filter(id => !idsToRemove.includes(id));
-            localStorage.setItem(receiverTrashedKey, JSON.stringify(receiverTrashedList));
-            console.log('✅ [PERM_DELETE] Cleaned receiver_trashed_shares');
-          }
-        } catch (e) {
-          console.error('❌ [PERM_DELETE] Failed to clean receiver_trashed_shares', e);
-        }
-        
-        // Trigger sync to update all views (including sender's UI)
-        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-        sharedFilesManager.triggerSync();
-      } catch (e) {
-        console.error('❌ [PERM_DELETE] Failed to add to hidden list', e);
-      }
-      
-      // Remove from deleted files
-      setDeletedFiles(deletedFiles.filter((f) => !toDelete.some(d => d.id === f.id)));
-      setSelectedFiles(new Set());
-      console.log('✅ [PERM_DELETE] Receiver permanently deleted shared items');
-      return;
+    // ✅ OPTIMISTIC UI: Update UI first (instant feedback)
+    const storageToFree = toDelete.reduce((acc, item) => acc + (item.size || 0), 0);
+    setDeletedFiles((prev) => prev.filter((f) => !toDelete.some(d => d.id === f.id)));
+    if (!isReceiverDeletingSharedFile) {
+      setStorageUsed((prev) => Math.max(0, prev - storageToFree));
     }
+    setSelectedFiles(new Set());
+    console.log('✅ [PERM_DELETE] UI updated (optimistic)');
 
-    // SCENARIO 2: If owner is permanently deleting, remove all shares permanently
-    // so recipients no longer see the item (must re-share manually).
-    try {
-      if (file.owner === userEmail) {
-        const recipients = sharedFilesManager.getShareRecipients(id);
-        console.log('💥 [PERM_DELETE] SENDER permanently deleting shared file. Recipients:', recipients);
-        
-        if (recipients.length > 0) {
-          console.log('🚫 [PERM_DELETE] Removing all shares permanently');
+    // ✅ BACKGROUND: Run API calls without blocking UI
+    (async () => {
+      try {
+        // SCENARIO 1: Receiver permanently deleting a shared item
+        if (isReceiverDeletingSharedFile) {
+          const itemsToHide = toDelete.map(item => ({
+            itemId: (item as any).originalSharedId || item.id,
+            itemName: item.name
+          }));
           
-          // ✅ FIX: Remove ALL descendants from temp_deleted lists, not just the parent
-          const allIdsToClean = toDelete.map(item => item.id);
-          
-          recipients.forEach(recipientEmail => {
-            const key = `temp_deleted_shares_${recipientEmail}`;
-            const existing = localStorage.getItem(key);
-            
-            if (existing) {
-              const deletedList = JSON.parse(existing);
-              const filtered = deletedList.filter((fileId: string) => !allIdsToClean.includes(fileId));
-              
-              if (filtered.length > 0) {
-                localStorage.setItem(key, JSON.stringify(filtered));
-              } else {
-                localStorage.removeItem(key);
-              }
-            }
-            console.log(`🚫 [PERM_DELETE] Cleaned temp_deleted for ${recipientEmail}`);
-          });
-          
-          // Remove share entries for ALL items
-          toDelete.forEach(item => {
-            sharedFilesManager.removeAllSharesForFileRecursive(item.id);
-          });
-          console.log('✅ [PERM_DELETE] All share entries removed');
-          
-          // ✅ NEW: Also clean up receiver's hidden_shares and receiver_trashed_shares
-          recipients.forEach(recipientEmail => {
-            // Clean hidden_shares
+          for (const { itemId } of itemsToHide) {
             try {
-              const hiddenKey = `hidden_shares_${recipientEmail}`;
-              const hiddenData = localStorage.getItem(hiddenKey);
-              if (hiddenData) {
-                let hiddenList: string[] = JSON.parse(hiddenData);
-                const filtered = hiddenList.filter(id => !allIdsToClean.includes(id));
-                if (filtered.length > 0) {
-                  localStorage.setItem(hiddenKey, JSON.stringify(filtered));
-                } else {
-                  localStorage.removeItem(hiddenKey);
-                }
-                console.log(`🧹 [PERM_DELETE] Cleaned hidden_shares for ${recipientEmail}`);
-              }
+              await apiCall('/api/shares/hidden', {
+                method: 'POST',
+                body: JSON.stringify({ shareId: itemId, fileId: itemId })
+              });
             } catch (e) {
-              console.error(`❌ Failed to clean hidden_shares for ${recipientEmail}`, e);
+              console.error(`Failed to hide ${itemId}:`, e);
             }
-            
-            // Clean receiver_trashed_shares
+          }
+          
+          // Remove share entries
+          for (const item of toDelete) {
+            const shareId = (item as any).originalSharedId || item.id;
             try {
-              const rtKey = `receiver_trashed_shares_${recipientEmail}`;
-              const rtData = localStorage.getItem(rtKey);
-              if (rtData) {
-                let rtList: string[] = JSON.parse(rtData);
-                const filtered = rtList.filter(id => !allIdsToClean.includes(id));
-                if (filtered.length > 0) {
-                  localStorage.setItem(rtKey, JSON.stringify(filtered));
-                } else {
-                  localStorage.removeItem(rtKey);
-                }
-                console.log(`🧹 [PERM_DELETE] Cleaned receiver_trashed_shares for ${recipientEmail}`);
-              }
+              await apiCall('/api/shares', {
+                method: 'DELETE',
+                body: JSON.stringify({ fileId: shareId, recipientEmail: userEmail })
+              });
             } catch (e) {
-              console.error(`❌ Failed to clean receiver_trashed_shares for ${recipientEmail}`, e);
+              console.error(`Failed to unshare ${shareId}:`, e);
             }
-          });
+          }
+
+          // Clean receiver_trashed_shares
+          for (const item of toDelete) {
+            const itemId = (item as any).originalSharedId || item.id;
+            try {
+              await apiCall('/api/shares/trashed', {
+                method: 'DELETE',
+                body: JSON.stringify({ fileId: itemId })
+              });
+            } catch (e) {
+              // Ignore cleanup errors
+            }
+          }
           
           window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+          return;
         }
-      }
-    } catch (e) {
-      console.error('❌ [PERM_DELETE] Failed to remove shares on permanent delete', e);
-    }
 
-    for (const item of toDelete) {
-      if (item.type === 'file') {
+        // SCENARIO 2: Owner permanently deleting
+        if (emailsMatch(file.owner, userEmail)) {
+          let recipients: string[] = [];
+          try {
+            const recipientsResponse = await apiCall('/api/shares/recipients', {
+              method: 'POST',
+              body: JSON.stringify({ fileId: id })
+            });
+            recipients = recipientsResponse.recipients || [];
+          } catch (e) {
+            // Ignore
+          }
+          
+          if (recipients.length > 0) {
+            for (const item of toDelete) {
+              try {
+                await apiCall(`/api/shares/all?fileId=${item.id}&recursive=true`, { method: 'DELETE' });
+              } catch (e) {
+                // Ignore
+              }
+            }
+            window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+          }
+        }
+
+        // Delete file data from storage
+        for (const item of toDelete) {
+          if (item.type === 'file') {
+            try {
+              await fileStorage.deleteFile(item.id);
+            } catch (e) {
+              // Ignore storage errors
+            }
+          }
+        }
+
+        // ✅ FIX: Use bulk delete API which properly handles folder hierarchies
+        // The bulk API checks if ancestors are deleted, allowing children of deleted folders to be removed
+        const allIdsToDelete = toDelete.map(item => item.id);
         try {
-          await fileStorage.deleteFile(item.id);
-          console.log('🗑️ [PERM_DELETE] Deleted file data from storage:', item.id);
-        } catch (error) {
-          console.error('❌ [PERM_DELETE] Failed to delete file from storage:', error);
+          await apiCall('/api/files/permanent-delete', {
+            method: 'DELETE',
+            body: JSON.stringify({ fileIds: allIdsToDelete })
+          });
+          console.log(`✅ [PERM_DELETE] Bulk deleted ${allIdsToDelete.length} files via API`);
+        } catch (e) {
+          console.error(`❌ [PERM_DELETE] Bulk delete failed, trying individual deletes:`, e);
+          // Fallback to individual deletes
+          for (const item of toDelete) {
+            try {
+              await apiCall(`/api/trash/${item.id}`, { method: 'DELETE' });
+            } catch (e2) {
+              console.error(`❌ [PERM_DELETE] Failed to delete ${item.id} from API:`, e2);
+            }
+          }
         }
+      } catch (e) {
+        console.error('❌ [PERM_DELETE] Background API calls failed:', e);
       }
-    }
-
-    setDeletedFiles(deletedFiles.filter((f) => !toDelete.some(d => d.id === f.id)));
-    setStorageUsed((prev) => Math.max(0, prev - toDelete.reduce((acc, item) => acc + (item.size || 0), 0)));
-    setSelectedFiles(new Set());
-    console.log('✅ [PERM_DELETE] File permanently deleted');
+    })();
   };
 
-  // ─── move ───────────────────────────────────────────────────────────
-  const handleMoveToFolder = (fileId: string, targetFolderId: string | null) => {
+  // TOP IS DONE???????
+
+
+
+// ─── move ───────────────────────────────────────────────────────────
+  const handleMoveToFolder = async (fileId: string, targetFolderId: string | null) => {
     if (!ensureUser('handleMoveToFolder')) return;
     
     const file = files.find(f => f.id === fileId);
@@ -2192,10 +2480,35 @@ export function useVault(userEmail: string, userName?: string) {
       return;
     }
     
+    // Fetch recipients from API
+    let fileRecipients: string[] = [];
+    let targetRecipients: string[] = [];
+    
+    try {
+      const fileRecipientsResponse = await apiCall('/api/shares/recipients', {
+        method: 'POST',
+        body: JSON.stringify({ fileId })
+      });
+      fileRecipients = fileRecipientsResponse.recipients || [];
+    } catch (e) {
+      console.error('Failed to fetch file recipients:', e);
+    }
+    
+    if (targetFolderId) {
+      try {
+        const targetRecipientsResponse = await apiCall('/api/shares/recipients', {
+          method: 'POST',
+          body: JSON.stringify({ fileId: targetFolderId })
+        });
+        targetRecipients = targetRecipientsResponse.recipients || [];
+      } catch (e) {
+        console.error('Failed to fetch target folder recipients:', e);
+      }
+    }
+    
     // ✅ GUARD: Prevent shared files from going into unshared folders
-    const fileRecipients = sharedFilesManager.getShareRecipients(fileId);
     const isFileShared = fileRecipients.length > 0;
-    const targetIsShared = targetFolderId ? sharedFilesManager.getShareRecipients(targetFolderId).length > 0 : false;
+    const targetIsShared = targetFolderId ? targetRecipients.length > 0 : false;
     const targetFolderOwner = targetFolder?.owner || userEmail;
     const targetIsReceivedShare = targetFolder?.isReceivedShare || (targetFolder?.owner && targetFolder.owner !== userEmail);
     
@@ -2284,6 +2597,20 @@ export function useVault(userEmail: string, userName?: string) {
     
     console.log(`✅ [MOVE] Updated local files state`);
     
+    // Update file in API
+    try {
+      await apiCall(`/api/files/${fileId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ 
+          name: newName,
+          parentFolderId: targetFolderId 
+        })
+      });
+      console.log(`✅ [MOVE] Updated file in API`);
+    } catch (apiError) {
+      console.error('❌ [MOVE] Failed to update file in API:', apiError);
+    }
+    
     // ✅ CRITICAL FIX: Handle moves into shared folders (bi-directional sharing)
     if (targetFolderId && targetFolder) {
       // Check if target folder is shared (could be received or owned)
@@ -2304,12 +2631,11 @@ export function useVault(userEmail: string, userName?: string) {
       if (isReceivedFolder && folderOwner !== userEmail) {
         // If moving into a received shared folder, share back with the owner
         peopleToShareWith.push(folderOwner);
-        console.log(`🔄 [MOVE] Target is a received folder, will share with owner: \${folderOwner}`);
+        console.log(`🔄 [MOVE] Target is a received folder, will share with owner: ${folderOwner}`);
       }
       
       // Also share with any other recipients of this folder
-      const folderRecipients = sharedFilesManager.getShareRecipients(targetFolderId);
-      peopleToShareWith = [...new Set([...peopleToShareWith, ...folderRecipients])];
+      peopleToShareWith = [...new Set([...peopleToShareWith, ...targetRecipients])];
       
       // Remove current user from the list
       peopleToShareWith = peopleToShareWith.filter(email => email !== userEmail);
@@ -2317,85 +2643,71 @@ export function useVault(userEmail: string, userName?: string) {
       if (peopleToShareWith.length > 0) {
         console.log(`🎯 [MOVE] Target folder is shared, will share file with ${peopleToShareWith.length} user(s):`, peopleToShareWith);
         
-        // 🔍 DEBUG: dump the receiver_trashed_shares for each target so we can see if they have the folder trashed
-        peopleToShareWith.forEach(email => {
+        // 🔍 DEBUG: dump the receiver_trashed_shares for each target
+        for (const email of peopleToShareWith) {
           try {
-            const rtKey = `receiver_trashed_shares_${email}`;
-            const rtRaw = localStorage.getItem(rtKey);
-            const rtList: string[] = rtRaw ? JSON.parse(rtRaw) : [];
+            const rtResponse = await apiCall(`/api/shares/trashed?recipientEmail=${encodeURIComponent(email)}`);
+            const rtList: string[] = (rtResponse.data || []).map((t: any) => t.fileId);
             console.log(`🔍 [MOVE] receiver_trashed_shares for ${email}: ${JSON.stringify(rtList)}`);
             console.log(`   Target folder ${targetFolderId} in their trash? ${rtList.includes(targetFolderId!)}`);
           } catch (e) {
             console.error(`❌ [MOVE] Failed to read receiver_trashed_shares for ${email}`, e);
           }
-        });
+        }
 
-        // Share the file with each person (including folder owner if receiver is moving file in)
-        // Wrap in async IIFE to handle await
-        (async () => {
-          for (const recipientEmail of peopleToShareWith) {
-            try {
-              // Get file data if it's a file (not folder)
-              let fileData: Blob | undefined = undefined;
-              if (file.type === 'file') {
-                try {
-                  fileData = await fileStorage.getFile(file.id);
-                  console.log(`📦 [MOVE] Got file data for auto-share: ${file.name}`);
-                } catch (error) {
-                  console.error(`❌ [MOVE] Failed to get file data for ${file.name}:`, error);
-                }
+        // Share the file with each person
+        for (const recipientEmail of peopleToShareWith) {
+          try {
+            // Get file data if it's a file (not folder)
+            let fileData: Blob | undefined = undefined;
+            if (file.type === 'file') {
+              try {
+                fileData = (await fileStorage.getFile(file.id)) ?? undefined;
+                console.log(`📦 [MOVE] Got file data for auto-share: ${file.name}`);
+              } catch (error) {
+                console.error(`❌ [MOVE] Failed to get file data for ${file.name}:`, error);
               }
-              
-              const success = await sharedFilesManager.shareFile(
-                file.id,
-                newName,  // Use the new name (with (1) suffix if needed)
-                file.size,
-                file.type,
-                userEmail,  // Current user is the owner/sender
-                userName || userEmail,
-                recipientEmail,
-                file.createdAt,
-                targetFolderId,  // Set parent to the shared folder
-                fileData
-              );
-              
-              if (success) {
-                console.log(`✅ [MOVE] Auto-shared "${newName}" with ${recipientEmail}`);
-              } else {
-                console.log(`ℹ️ [MOVE] "${newName}" already shared with ${recipientEmail}`);
-              }
-            } catch (error) {
-              console.error(`❌ [MOVE] Failed to auto-share with ${recipientEmail}:`, error);
             }
+            
+            await apiCall('/api/shares', {
+              method: 'POST',
+              body: JSON.stringify({
+                fileId: file.id,
+                fileName: newName,  // Use the new name
+                fileSize: file.size,
+                fileType: file.type,
+                recipientEmail: recipientEmail,
+                parentFolderId: targetFolderId,  // Set parent to the shared folder
+                fileData: fileData ? await fileData.text() : undefined
+              })
+            });
+            
+            console.log(`✅ [MOVE] Auto-shared "${newName}" with ${recipientEmail}`);
+          } catch (error) {
+            console.error(`❌ [MOVE] Failed to auto-share with ${recipientEmail}:`, error);
           }
-          
-          // Trigger sync after auto-sharing
-          sharedFilesManager.triggerSync();
-          console.log(`🔔 [MOVE] Triggered sync after auto-sharing`);
-        })();
+        }
+        
+        // Trigger sync after auto-sharing
+        console.log(`🔔 [MOVE] Triggered sync after auto-sharing`);
       }
     }
 
-    
     // ✅ If this file was already being shared, update the shared file entries too
-    const sharedWith = sharedFilesManager.getShareRecipients(fileId);
+    const sharedWith = fileRecipients;
     if (sharedWith.length > 0) {
       console.log(`📤 [MOVE] File is shared with ${sharedWith.length} recipient(s), updating shared entries...`);
       
-      // Update each share entry with new parentFolderId AND new name
-      const allShares = sharedFilesManager.getAllShares();
-      const updatedShares = allShares.map(share => {
-        if (share.fileId === fileId) {
-          console.log(`🔄 [MOVE] Updating share entry for ${share.recipientEmail}`);
-          return { ...share, fileName: newName, parentFolderId: targetFolderId };
-        }
-        return share;
-      });
-      
-      // Save updated shares
       try {
-        localStorage.setItem(SHARED_FILES_KEY, JSON.stringify(updatedShares));
-        sharedFilesManager.triggerSync();
+        // Update share entries via API
+        await apiCall('/api/shares', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            fileId: fileId,
+            fileName: newName,
+            parentFolderId: targetFolderId
+          })
+        });
         console.log(`✅ [MOVE] Updated shared file location and name for ${sharedWith.length} recipient(s)`);
       } catch (error) {
         console.error('❌ [MOVE] Failed to update shared file entries:', error);
@@ -2407,22 +2719,32 @@ export function useVault(userEmail: string, userName?: string) {
     // ✅ If this is a folder, recursively update all children
     if (file.type === 'folder') {
       console.log(`📁 [MOVE] Target is a folder, recursively updating children...`);
-      const updateChildrenRecursive = (parentId: string) => {
+      const updateChildrenRecursive = async (parentId: string) => {
         const children = files.filter(f => f.parentFolderId === parentId);
         console.log(`🔍 [MOVE] Found ${children.length} children in folder ${parentId}`);
-        children.forEach(child => {
-          const childSharedWith = sharedFilesManager.getShareRecipients(child.id);
-          if (childSharedWith.length > 0) {
-            const allShares = sharedFilesManager.getAllShares();
-            const updatedShares = allShares.map(share => {
-              if (share.fileId === child.id) {
-                return { ...share, parentFolderId: child.parentFolderId };
-              }
-              return share;
+        
+        for (const child of children) {
+          // Fetch child recipients
+          let childSharedWith: string[] = [];
+          try {
+            const childRecipientsResponse = await apiCall('/api/shares/recipients', {
+              method: 'POST',
+              body: JSON.stringify({ fileId: child.id })
             });
-            
+            childSharedWith = childRecipientsResponse.recipients || [];
+          } catch (e) {
+            console.error('Failed to fetch child recipients:', e);
+          }
+          
+          if (childSharedWith.length > 0) {
             try {
-              localStorage.setItem(SHARED_FILES_KEY, JSON.stringify(updatedShares));
+              await apiCall('/api/shares', {
+                method: 'PATCH',
+                body: JSON.stringify({
+                  fileId: child.id,
+                  parentFolderId: child.parentFolderId
+                })
+              });
               console.log(`✅ [MOVE] Updated child share: ${child.name}`);
             } catch (error) {
               console.error('❌ [MOVE] Failed to update child shared file:', error);
@@ -2430,23 +2752,35 @@ export function useVault(userEmail: string, userName?: string) {
           }
           
           if (child.type === 'folder') {
-            updateChildrenRecursive(child.id);
+            await updateChildrenRecursive(child.id);
           }
-        });
+        }
       };
       
-      updateChildrenRecursive(fileId);
-      sharedFilesManager.triggerSync();
+      await updateChildrenRecursive(fileId);
       console.log(`✅ [MOVE] Finished updating folder and all children`);
     }
+    
+    // Trigger sync
+    window.dispatchEvent(new Event(SHARED_FILES_EVENT));
     
     console.log(`🎉 [MOVE] Move operation complete!`);
   };
 
-  // ─── download ───────────────────────────────────────────────────────
+  // DONE
+
+  
+// ─── download ───────────────────────────────────────────────────────
   const handleDownloadFile = async (id: string) => {
     const file = files.find((f) => f.id === id);
     if (!file) return;
+
+    // ✅ Check if we have masterKey
+    if (!masterKey) {
+      alert('Vault is locked. Please unlock your vault to download files.');
+      console.error('Cannot download: masterKey not available');
+      return;
+    }
 
     if (file.type === 'folder') {
       const JSZip = (await import('jszip')).default;
@@ -2460,9 +2794,36 @@ export function useVault(userEmail: string, userName?: string) {
             await addFolderToZip(child.id, subFolder);
           } else {
             try {
-              const blob = await fileStorage.getFile(child.id);
-              if (blob) {
-                zipFolder.file(child.name, blob);
+              // Download encrypted file data from API
+              const response = await fetch(`/api/files/download/${child.id}`, {
+                headers: {
+                  'Authorization': `Bearer ${authToken}`,
+                },
+              });
+
+              if (!response.ok) {
+                console.error(`Failed to download file ${child.name}`);
+                continue;
+              }
+
+              const { encryptedData, iv, wrappedKey, fileName, mimeType } = await response.json();
+
+              // ✅ FIX: Unwrap the key first
+              const fileKey = await unwrapFileKey(
+                new Uint8Array(wrappedKey).buffer,
+                masterKey
+              );
+
+              // ✅ FIX: Decrypt with unwrapped key AND mimeType
+              const decryptedBlob = await decryptFileData(
+                new Uint8Array(encryptedData).buffer,
+                fileKey,
+                new Uint8Array(iv),
+                mimeType || 'application/octet-stream'
+              );
+
+              if (decryptedBlob) {
+                zipFolder.file(child.name, decryptedBlob);
               }
             } catch (error) {
               console.error(`Failed to add file ${child.name} to zip:`, error);
@@ -2482,18 +2843,33 @@ export function useVault(userEmail: string, userName?: string) {
       URL.revokeObjectURL(url);
     } else {
       try {
-        let blob: Blob | null = null;
+        // Download encrypted file data from API
+        const response = await fetch(`/api/files/download/${id}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`,
+          },
+        });
 
-        if (file.isSharedFile && file.owner && file.owner !== userEmail) {
-          blob = await sharedFilesManager.getSharedFileData(id, file.owner, userEmail);
-          if (blob) {
-            console.log('✅ Downloaded shared file data');
-          }
+        if (!response.ok) {
+          alert('File not found. It may not have been uploaded properly.');
+          return;
         }
 
-        if (!blob) {
-          blob = await fileStorage.getFile(id);
-        }
+        const { encryptedData, iv, wrappedKey, fileName, mimeType } = await response.json();
+
+        // ✅ FIX: Unwrap the key first
+        const fileKey = await unwrapFileKey(
+          new Uint8Array(wrappedKey).buffer,
+          masterKey
+        );
+
+        // ✅ FIX: Decrypt with unwrapped key AND mimeType
+        const blob = await decryptFileData(
+          new Uint8Array(encryptedData).buffer,
+          fileKey,
+          new Uint8Array(iv),
+          mimeType || 'application/octet-stream'
+        );
 
         if (blob) {
           const url = URL.createObjectURL(blob);
@@ -2503,7 +2879,7 @@ export function useVault(userEmail: string, userName?: string) {
           a.click();
           URL.revokeObjectURL(url);
         } else {
-          alert('File not found. It may not have been uploaded properly.');
+          alert('Failed to decrypt file. Please try again.');
         }
       } catch (error) {
         console.error('Failed to download file:', error);
@@ -2512,202 +2888,225 @@ export function useVault(userEmail: string, userName?: string) {
     }
   };
 
-  // ─── favorites ──────────────────────────────────────────────────────
-  const handleToggleFavorite = (id: string) => {
+
+  // below is handled in a func by fun manner
+  
+// ─── favorites ──────────────────────────────────────────────────────
+  const handleToggleFavorite = async (id: string) => {
     if (!ensureUser('handleToggleFavorite')) return;
-    setFiles(files.map((f) => (f.id === id ? { ...f, isFavorite: !f.isFavorite } : f)));
+    
+    const file = files.find((f) => f.id === id);
+    if (!file) return;
+
+    const newFavoriteState = !file.isFavorite;
+    const originalFavoriteState = file.isFavorite;
+
+    // ✅ FIX: Use functional update to avoid closure issues
+    setFiles(prev => prev.map((f) => (f.id === id ? { ...f, isFavorite: newFavoriteState } : f)));
+
+    // ✅ FIX: Use API-based favorites (per-user, works for both owned and received files)
+    try {
+      const response = await fetch('/api/metadata/favorites', {
+        method: newFavoriteState ? 'POST' : 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ fileId: id }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Failed to toggle favorite:', errorData.error || response.statusText);
+        // ✅ FIX: Use functional update for revert too
+        setFiles(prev => prev.map((f) => (f.id === id ? { ...f, isFavorite: originalFavoriteState } : f)));
+      } else {
+        console.log(`❤️ [FAVORITE] ${newFavoriteState ? 'Added' : 'Removed'}: ${file.name}`);
+      }
+    } catch (error) {
+      console.error('Error toggling favorite:', error);
+      // ✅ FIX: Use functional update for revert
+      setFiles(prev => prev.map((f) => (f.id === id ? { ...f, isFavorite: originalFavoriteState } : f)));
+    }
   };
 
-  // ─── sharing ────────────────────────────────────────────────────────
+// ─── sharing ────────────────────────────────────────────────────────
   const handleShareFile = async (id: string, recipientEmail: string, senderName?: string): Promise<boolean> => {
+    console.log('📤 [SHARE] handleShareFile called:', { id, recipientEmail, senderName });
+    
     const file = files.find((f) => f.id === id);
-    if (!file || file.isSharedFile) return false;
-    if (!ensureUser('handleShareFile')) return false;
-
-    console.log('📤 [SHARE] Sharing file:', { id, name: file.name, type: file.type, recipientEmail });
-
-    // ✅ FIX: Check if recipient has this file in their trash (tombstone exists)
-    try {
-      const recipientTrashKey = `trash_${recipientEmail}`;
-      const recipientTrashData = localStorage.getItem(recipientTrashKey);
-      
-      if (recipientTrashData) {
-        const recipientTrash = JSON.parse(recipientTrashData);
-        const inRecipientTrash = recipientTrash.some((item: any) => 
-          item.id === id || 
-          (item.sharedMeta && item.sharedMeta.fileId === id) ||
-          item.originalSharedId === id
-        );
-        
-        if (inRecipientTrash) {
-          console.warn('⚠️ [SHARE] Cannot share - recipient has this file in trash. They must permanently delete it first.');
-          alert('This file is in the recipient\'s trash. They must permanently delete it before you can share it again.');
-          return false;
-        }
-      }
-    } catch (e) {
-      console.error('❌ [SHARE] Error checking recipient trash:', e);
+    if (!file) {
+      console.log('❌ [SHARE] File not found in local state:', id);
+      return false;
+    }
+    if (file.isSharedFile) {
+      console.log('❌ [SHARE] Cannot share a received file:', { id, name: file.name });
+      return false;
+    }
+    if (!ensureUser('handleShareFile')) {
+      console.log('❌ [SHARE] No user session');
+      return false;
     }
 
+    // ✅ Sanity check: warn if ID looks like temp ID
+    if (id.length < 15 && !id.startsWith('c')) {
+      console.warn('⚠️ [SHARE] File ID looks like temp ID, may not exist in DB:', id);
+    }
+
+    console.log('📤 [SHARE] Sharing file:', { id, name: file.name, type: file.type, recipientEmail, currentSharedWith: file.sharedWith });
+
+    // Helper function to recursively get all descendants of a folder
+    const getAllDescendants = (folderId: string): FileItem[] => {
+      const children = files.filter((f) => f.parentFolderId === folderId);
+      let result = [...children];
+      for (const child of children) {
+        if (child.type === 'folder') {
+          result = result.concat(getAllDescendants(child.id));
+        }
+      }
+      return result;
+    };
+
+    // Collect all items to share
+    let itemsToShare: FileItem[] = [file];
+    if (file.type === 'folder') {
+      const descendants = getAllDescendants(file.id);
+      itemsToShare = itemsToShare.concat(descendants);
+    }
+
+    // ✅ OPTIMISTIC UI: Update sharedWith immediately for responsive feel
+    const normalizedRecipient = recipientEmail.toLowerCase().trim();
+    setFiles((prev) => prev.map((f) => {
+      if (!itemsToShare.some(item => item.id === f.id)) return f;
+      const currentSharedWith = (f as any).sharedWith || [];
+      if (currentSharedWith.some((email: string) => email.toLowerCase() === normalizedRecipient)) {
+        return f; // Already has this recipient
+      }
+      return { ...f, sharedWith: [...currentSharedWith, recipientEmail] };
+    }));
+
+    // ✅ HYBRID: Await ROOT item share, background for descendants
+    // This gives accurate feedback while keeping it fast
     try {
-      // Helper function to recursively get all descendants of a folder
-      const getAllDescendants = (folderId: string): FileItem[] => {
-        const children = files.filter((f) => f.parentFolderId === folderId);
-        let result = [...children];
-        for (const child of children) {
-          if (child.type === 'folder') {
-            result = result.concat(getAllDescendants(child.id));
-          }
-        }
-        return result;
-      };
-
-      // Collect all items to share
-      let itemsToShare: FileItem[] = [file];
-      if (file.type === 'folder') {
-        // Get all descendants (files and subfolders)
-        const descendants = getAllDescendants(file.id);
-        itemsToShare = itemsToShare.concat(descendants);
-        console.log(`📦 [SHARE] Sharing folder with ${descendants.length} items inside`);
-      }
-
-      // ✅ FIX: Clear temp_deleted markers BEFORE sharing
-      const tempDeletedKey = `temp_deleted_shares_${recipientEmail}`;
-      try {
-        const tempDeleted = localStorage.getItem(tempDeletedKey);
-        if (tempDeleted) {
-          const list = JSON.parse(tempDeleted);
-          const fileIds = itemsToShare.map(item => item.id);
-          const filtered = list.filter((fid: string) => !fileIds.includes(fid));
-          
-          if (filtered.length !== list.length) {
-            const removedCount = list.length - filtered.length;
-            console.log(`🧹 [SHARE] Clearing ${removedCount} temp_deleted marker(s) for ${recipientEmail}`);
-            
-            if (filtered.length > 0) {
-              localStorage.setItem(tempDeletedKey, JSON.stringify(filtered));
-            } else {
-              localStorage.removeItem(tempDeletedKey);
-            }
-          }
-        }
-      } catch (e) {
-        console.error('❌ [SHARE] Failed to clear temp_deleted markers:', e);
-      }
-
-      // ✅ FIX: Clear hidden_shares so a re-share overrides a previous permanent delete
-      try {
-        const hiddenKey = `hidden_shares_${recipientEmail}`;
-        const hiddenData = localStorage.getItem(hiddenKey);
-        if (hiddenData) {
-          const hiddenList: string[] = JSON.parse(hiddenData);
-          const fileIds = itemsToShare.map(item => item.id);
-          const filtered = hiddenList.filter((fid: string) => !fileIds.includes(fid));
-
-          if (filtered.length !== hiddenList.length) {
-            const removedCount = hiddenList.length - filtered.length;
-            console.log(`🧹 [SHARE] Clearing ${removedCount} hidden_shares entry(ies) for ${recipientEmail} — re-share overrides permanent delete`);
-
-            if (filtered.length > 0) {
-              localStorage.setItem(hiddenKey, JSON.stringify(filtered));
-            } else {
-              localStorage.removeItem(hiddenKey);
-            }
-          }
-        }
-      } catch (e) {
-        console.error('❌ [SHARE] Failed to clear hidden_shares:', e);
-      }
-
-      // ✅ FIX: Clear receiver_trashed_shares so re-shared items don't get routed to trash
-      try {
-        const receiverTrashedKey = `receiver_trashed_shares_${recipientEmail}`;
-        const receiverTrashedData = localStorage.getItem(receiverTrashedKey);
-        if (receiverTrashedData) {
-          const receiverTrashedList: string[] = JSON.parse(receiverTrashedData);
-          const fileIds = itemsToShare.map(item => item.id);
-          const filtered = receiverTrashedList.filter((fid: string) => !fileIds.includes(fid));
-
-          if (filtered.length !== receiverTrashedList.length) {
-            const removedCount = receiverTrashedList.length - filtered.length;
-            console.log(`🧹 [SHARE] Clearing ${removedCount} receiver_trashed_shares entry(ies) for ${recipientEmail} — re-share overrides previous trash`);
-
-            if (filtered.length > 0) {
-              localStorage.setItem(receiverTrashedKey, JSON.stringify(filtered));
-            } else {
-              localStorage.removeItem(receiverTrashedKey);
-            }
-          }
-        }
-      } catch (e) {
-        console.error('❌ [SHARE] Failed to clear receiver_trashed_shares:', e);
-      }
-
-      // Share each item
-      let allSuccess = true;
-      let alreadySharedCount = 0;
-      
-      for (const item of itemsToShare) {
-        let fileData: Blob | undefined = undefined;
-        
-        // Only get file data for actual files (not folders)
-        if (item.type === 'file') {
-          try {
-            fileData = await fileStorage.getFile(item.id);
-            console.log(`📦 [SHARE] Got file data for: ${item.name}`);
-          } catch (error) {
-            console.error(`❌ [SHARE] Failed to get file data for ${item.name}:`, error);
-          }
-        }
-
-        const success = await sharedFilesManager.shareFile(
-          item.id,
-          item.name,
-          item.size,
-          item.type,
-          userEmail,
-          senderName || userName || userEmail,
+      // Share the ROOT item first and await it
+      const rootResponse = await fetch('/api/shares', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          fileId: file.id,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type,
           recipientEmail,
-          item.createdAt,
-          item.parentFolderId,
-          fileData
-        );
+          parentFolderId: file.parentFolderId,
+        }),
+      });
 
-        if (success) {
-          console.log(`✅ [SHARE] Successfully shared ${item.type}: ${item.name}`);
-        } else {
-          console.log(`ℹ️ [SHARE] ${item.type} already shared (reshare): ${item.name}`);
-          alreadySharedCount++;
-        }
-      }
+      console.log('📤 [SHARE] ROOT API response status:', rootResponse.status, 'for', file.name);
 
-      // ✅ FIX: Trigger sync events
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-        console.log('🔔 [SHARE] Triggered sync event for reshare');
+      if (!rootResponse.ok) {
+        const result = await rootResponse.json();
+        console.log('❌ [SHARE] ROOT API error:', result, 'status:', rootResponse.status);
         
-        try {
-          sharedFilesManager.triggerSync();
-        } catch (e) {
-          console.error('Failed to trigger cross-tab sync', e);
-        }
-      }
-
-      if (allSuccess || alreadySharedCount === itemsToShare.length) {
-        console.log(`✅ [SHARE] Successfully shared/reshared ${file.name} and all contents with ${recipientEmail}`);
-        return true;
-      } else {
-        console.warn(`⚠️ [SHARE] Some items failed to share`);
+        // Revert optimistic update for ALL items
+        setFiles((prev) => prev.map((f) => {
+          if (!itemsToShare.some(i => i.id === f.id)) return f;
+          const currentSharedWith = (f as any).sharedWith || [];
+          return {
+            ...f,
+            sharedWith: currentSharedWith.filter((e: string) => e.toLowerCase() !== normalizedRecipient)
+          };
+        }));
         return false;
       }
 
+      const rootResult = await rootResponse.json();
+      console.log('📤 [SHARE] ROOT API result:', rootResult);
+
+      if (!rootResult.success && !rootResult.message?.includes('already shared')) {
+        // Root share failed - revert
+        console.log('❌ [SHARE] ROOT share failed:', rootResult.message);
+        setFiles((prev) => prev.map((f) => {
+          if (!itemsToShare.some(i => i.id === f.id)) return f;
+          const currentSharedWith = (f as any).sharedWith || [];
+          return {
+            ...f,
+            sharedWith: currentSharedWith.filter((e: string) => e.toLowerCase() !== normalizedRecipient)
+          };
+        }));
+        return false;
+      }
+
+      console.log(`✅ [SHARE] ROOT item shared successfully: ${file.name}`);
+
+      // Share descendants in BACKGROUND (don't block)
+      if (itemsToShare.length > 1) {
+        const descendants = itemsToShare.slice(1); // Everything except root
+        (async () => {
+          console.log(`📤 [SHARE] Sharing ${descendants.length} descendants in background`);
+          
+          const sharePromises = descendants.map(async (item) => {
+            try {
+              const response = await fetch('/api/shares', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${authToken}`,
+                },
+                body: JSON.stringify({
+                  fileId: item.id,
+                  fileName: item.name,
+                  fileSize: item.size,
+                  fileType: item.type,
+                  recipientEmail,
+                  parentFolderId: item.parentFolderId,
+                }),
+              });
+
+              if (response.ok) {
+                const result = await response.json();
+                if (result.success || result.message?.includes('already shared')) {
+                  console.log(`✅ [SHARE] Descendant shared: ${item.name}`);
+                  return true;
+                }
+              }
+              console.log(`❌ [SHARE] Descendant failed: ${item.name}`);
+              return false;
+            } catch (error) {
+              console.error(`❌ [SHARE] Error sharing ${item.name}:`, error);
+              return false;
+            }
+          });
+
+          const results = await Promise.all(sharePromises);
+          const successCount = results.filter(r => r).length;
+          console.log(`📤 [SHARE] Background complete: ${successCount}/${descendants.length} descendants shared`);
+        })();
+      }
+
+      // Trigger cross-tab sync so receiver sees it faster
+      window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+      return true;
+
     } catch (error) {
       console.error('❌ [SHARE] Failed to share file:', error);
+      // Revert optimistic update
+      setFiles((prev) => prev.map((f) => {
+        if (!itemsToShare.some(i => i.id === f.id)) return f;
+        const currentSharedWith = (f as any).sharedWith || [];
+        return {
+          ...f,
+          sharedWith: currentSharedWith.filter((e: string) => e.toLowerCase() !== normalizedRecipient)
+        };
+      }));
       return false;
     }
   };
 
-  const handleUnshareFile = (id: string, recipientEmail: string): boolean => {
+ const handleUnshareFile = async (id: string, recipientEmail: string): Promise<boolean> => {
     if (!ensureUser('handleUnshareFile')) return false;
     
     const file = files.find((f) => f.id === id);
@@ -2715,40 +3114,75 @@ export function useVault(userEmail: string, userName?: string) {
     
     console.log('🚫 [UNSHARE] Unsharing:', { id, name: file.name, type: file.type, recipientEmail });
     
-    // Helper to get all descendants
-    const getAllDescendants = (folderId: string): FileItem[] => {
+    // ✅ FIX: Get all descendants for folders (to update their sharedWith too)
+    const getAllDescendantIds = (folderId: string): string[] => {
       const children = files.filter((f) => f.parentFolderId === folderId);
-      let result = [...children];
+      let result = children.map(c => c.id);
       for (const child of children) {
         if (child.type === 'folder') {
-          result = result.concat(getAllDescendants(child.id));
+          result = result.concat(getAllDescendantIds(child.id));
         }
       }
       return result;
     };
     
-    // Collect all items to unshare
-    let itemsToUnshare: FileItem[] = [file];
-    if (file.type === 'folder') {
-      const descendants = getAllDescendants(file.id);
-      itemsToUnshare = itemsToUnshare.concat(descendants);
-      console.log(`🚫 [UNSHARE] Unsharing folder with ${descendants.length} items inside`);
-    }
+    const idsToUpdate = file.type === 'folder' ? [id, ...getAllDescendantIds(id)] : [id];
+    const idsSet = new Set(idsToUpdate);
     
-    // Unshare each item
-    let allSuccess = true;
-    for (const item of itemsToUnshare) {
-      const success = sharedFilesManager.unshareFile(item.id, recipientEmail);
-      if (!success) {
-        console.warn(`⚠️ [UNSHARE] Failed to unshare: ${item.name}`);
-        allSuccess = false;
+    // ✅ OPTIMISTIC UI: Update sharedWith for parent AND all children
+    const normalizedRecipient = recipientEmail.toLowerCase().trim();
+    setFiles((prev) => prev.map((f) => {
+      if (!idsSet.has(f.id)) return f;
+      const currentShared = f.sharedWith || [];
+      const updatedShared = currentShared.filter(
+        (email) => email.toLowerCase() !== normalizedRecipient
+      );
+      return {
+        ...f,
+        sharedWith: updatedShared.length > 0 ? updatedShared : undefined
+      };
+    }));
+    
+    // ✅ BACKGROUND: Run API call
+    try {
+      const response = await fetch(`/api/shares?fileId=${id}&recipientEmail=${encodeURIComponent(recipientEmail)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('❌ [UNSHARE] Failed to unshare:', result.error);
+        // Revert on failure - trigger sync to restore correct state
+        debouncedSyncSharedFiles();
+        return false;
       }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        console.log(`✅ [UNSHARE] Successfully unshared ${result.count} item(s) from ${recipientEmail}`);
+        // ✅ FIX: Trigger full sync to ensure state is correct (paperclip removed)
+        debouncedSyncSharedFiles();
+        // Trigger event for receiver to see changes
+        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+        return true;
+      } else {
+        console.warn('⚠️ [UNSHARE] Unshare returned unsuccessful');
+        return false;
+      }
+
+    } catch (error) {
+      console.error('❌ [UNSHARE] Error unsharing file:', error);
+      return false;
     }
-    
-    return allSuccess;
   };
 
-  const handleUnshareAll = (id: string): boolean => {
+  // TODO START HERE.
+
+const handleUnshareAll = async (id: string): Promise<boolean> => {
     if (!ensureUser('handleUnshareAll')) return false;
     
     const file = files.find((f) => f.id === id);
@@ -2756,42 +3190,46 @@ export function useVault(userEmail: string, userName?: string) {
     
     console.log('🚫 [UNSHARE_ALL] Unsharing from all:', { id, name: file.name, type: file.type });
     
-    // Helper to get all descendants
-    const getAllDescendants = (folderId: string): FileItem[] => {
-      const children = files.filter((f) => f.parentFolderId === folderId);
-      let result = [...children];
-      for (const child of children) {
-        if (child.type === 'folder') {
-          result = result.concat(getAllDescendants(child.id));
-        }
+    try {
+      const recursive = file.type === 'folder';
+      const response = await fetch(`/api/shares/all?fileId=${id}&recursive=${recursive}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('❌ [UNSHARE_ALL] Failed to unshare:', result.error);
+        return false;
       }
-      return result;
-    };
-    
-    // Collect all items to unshare
-    let itemsToUnshare: FileItem[] = [file];
-    if (file.type === 'folder') {
-      const descendants = getAllDescendants(file.id);
-      itemsToUnshare = itemsToUnshare.concat(descendants);
-      console.log(`🚫 [UNSHARE_ALL] Unsharing folder with ${descendants.length} items inside from all users`);
-    }
-    
-    // Unshare each item from all recipients
-    let allSuccess = true;
-    for (const item of itemsToUnshare) {
-      const success = sharedFilesManager.removeAllSharesForFileRecursive(item.id);
-      if (!success) {
-        console.warn(`⚠️ [UNSHARE_ALL] Failed to unshare: ${item.name}`);
-        allSuccess = false;
+
+      const result = await response.json();
+      
+      if (result.success) {
+        console.log(`✅ [UNSHARE_ALL] Successfully unshared ${result.count} share(s) from ${result.affectedRecipients} recipient(s)`);
+        return true;
+      } else {
+        console.warn('⚠️ [UNSHARE_ALL] Unshare all returned unsuccessful');
+        return false;
       }
+
+    } catch (error) {
+      console.error('❌ [UNSHARE_ALL] Error unsharing file from all:', error);
+      return false;
     }
-    
-    return allSuccess;
   };
 
   // ─── bulk operations ────────────────────────────────────────────────
-  const handleBulkDelete = () => {
+const handleBulkDelete = async () => {
     if (!ensureUser('handleBulkDelete')) return;
+    
+    // ✅ Guard: Don't proceed with empty selection
+    if (selectedFiles.size === 0) {
+      console.log('⚠️ [BULK_DELETE] No files selected, skipping');
+      return;
+    }
     
     const getAllDescendants = (folderId: string, fileList: FileItem[]): FileItem[] => {
       const children = fileList.filter((f) => f.parentFolderId === folderId);
@@ -2824,39 +3262,7 @@ export function useVault(userEmail: string, userName?: string) {
 
     console.log('🗑️ [BULK_DELETE] Deleting files:', uniqueFilesToDelete.length);
 
-    // Handle shared files - temporarily hide from receivers
-    uniqueFilesToDelete.forEach(file => {
-      const isShared = sharedFilesManager.getShareRecipients(file.id).length > 0;
-      
-      if (isShared && file.owner === userEmail) {
-        try {
-          const recipients = sharedFilesManager.getShareRecipients(file.id);
-          console.log('⏳ [BULK_DELETE] Marking file as temporarily deleted for receivers:', recipients);
-          
-          recipients.forEach(recipientEmail => {
-            const key = `temp_deleted_shares_${recipientEmail}`;
-            const existing = localStorage.getItem(key);
-            const deletedList = existing ? JSON.parse(existing) : [];
-            if (!deletedList.includes(file.id)) {
-              deletedList.push(file.id);
-              localStorage.setItem(key, JSON.stringify(deletedList));
-              console.log(`⏳ [BULK_DELETE] Added ${file.id} to temp_deleted list for ${recipientEmail}`);
-            }
-          });
-        } catch (e) {
-          console.error('❌ [BULK_DELETE] Failed to mark shared file as temporarily deleted', e);
-        }
-      }
-    });
-
-    // Trigger sync for receivers
-    try {
-      sharedFilesManager.triggerSync();
-    } catch (e) {
-      console.error('Failed to trigger storage event', e);
-    }
-
-    // Create deleted items with unique names
+    // Create deleted items with unique names for local state
     const deletedItems = uniqueFilesToDelete.map((item) => {
       const parentInTrash = item.parentFolderId && uniqueFilesToDelete.some(d => d.id === item.parentFolderId)
         ? item.parentFolderId
@@ -2879,20 +3285,54 @@ export function useVault(userEmail: string, userName?: string) {
       };
     });
 
-    // Update state
+    // ✅ OPTIMISTIC: Update UI first (instant feedback)
     setDeletedFiles([...deletedFiles, ...deletedItems]);
     setFiles(files.filter((f) => !uniqueFilesToDelete.some(d => d.id === f.id)));
     setSelectedFiles(new Set());
-    console.log('✅ [BULK_DELETE] Files moved to trash');
+    console.log('✅ [BULK_DELETE] Local state updated - files moved to trash (optimistic)');
+
+    // ✅ BACKGROUND: Run API call without blocking UI
+    (async () => {
+      try {
+        const fileIds = uniqueFilesToDelete.map(f => f.id);
+        
+        const response = await fetch('/api/trash/move', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ fileIds }),
+        });
+
+        if (!response.ok) {
+          const result = await response.json();
+          console.error('❌ [BULK_DELETE] API failed:', result.error);
+          // Note: We don't revert on failure - user can manually restore if needed
+        } else {
+          const result = await response.json();
+          console.log(`✅ [BULK_DELETE] API confirmed: ${result.message}`);
+        }
+      } catch (error) {
+        console.error('❌ [BULK_DELETE] API error:', error);
+      }
+    })();
   };
 
-  const handleBulkRestore = () => {
+const handleBulkRestore = async () => {
     const idsArray = Array.from(selectedFiles);
-    handleRestoreFiles(idsArray);
+    await handleRestoreFiles(idsArray);
   };
 
-  const handleBulkPermanentDelete = async () => {
+const handleBulkPermanentDelete = async () => {
     if (!ensureUser('handleBulkPermanentDelete')) return;
+    
+    // ✅ Guard: Don't proceed with empty selection
+    if (selectedFiles.size === 0) {
+      console.log('⚠️ [BULK_PERM_DELETE] No files selected, skipping');
+      return;
+    }
+    
     const filesToDelete: FileItem[] = [];
 
     selectedFiles.forEach((id) => {
@@ -2924,7 +3364,7 @@ export function useVault(userEmail: string, userName?: string) {
 
     console.log('💥 [BULK_PERM_DELETE] Permanently deleting files:', uniqueFilesToDelete.length);
 
-    // ✅ FIX: Check if ANY of the files are receiver-deleted shared files
+    // ✅ Check if ANY of the files are receiver-deleted shared files
     const hasReceiverDeletedSharedFiles = uniqueFilesToDelete.some(item => 
       !!(item as any).sharedMeta ||
       !!(item as any).originalSharedId ||
@@ -2935,140 +3375,123 @@ export function useVault(userEmail: string, userName?: string) {
     if (hasReceiverDeletedSharedFiles) {
       console.log('💥 [BULK_PERM_DELETE] RECEIVER permanently deleting shared files');
       
-      try {
-        const hiddenKey = `hidden_shares_${userEmail}`;
-        const existingHidden = localStorage.getItem(hiddenKey);
-        const hiddenList: string[] = existingHidden ? JSON.parse(existingHidden) : [];
-        
-        uniqueFilesToDelete.forEach(item => {
-          const isSharedItem = 
-            !!(item as any).sharedMeta ||
-            !!(item as any).originalSharedId ||
-            (item.isSharedFile && item.owner && item.owner !== userEmail);
-          
-          if (isSharedItem) {
-            const itemId = (item as any).originalSharedId || item.id;
-            if (!hiddenList.includes(itemId)) {
-              hiddenList.push(itemId);
-              console.log(`   ✅ Added ${itemId} ("${item.name}") to permanent hidden list`);
-            }
-          }
-        });
-        
-        localStorage.setItem(hiddenKey, JSON.stringify(hiddenList));
-        
-        // Cleanup temp_deleted
-        const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-        const existingTempDeleted = localStorage.getItem(tempDeletedKey);
-        if (existingTempDeleted) {
-          const tempDeletedList = JSON.parse(existingTempDeleted);
-          const idsToRemove = uniqueFilesToDelete.map(item => (item as any).originalSharedId || item.id);
-          const filtered = tempDeletedList.filter((id: string) => !idsToRemove.includes(id));
-          
-          if (filtered.length > 0) {
-            localStorage.setItem(tempDeletedKey, JSON.stringify(filtered));
-          } else {
-            localStorage.removeItem(tempDeletedKey);
-          }
-        }
-        
-        // ✅ NEW FIX: Remove share entries from registry when receiver permanently deletes
-        console.log('🗑️ [BULK_PERM_DELETE] Removing share entries from registry...');
-        uniqueFilesToDelete.forEach(item => {
-          const isSharedItem = 
-            !!(item as any).sharedMeta ||
-            !!(item as any).originalSharedId ||
-            (item.isSharedFile && item.owner && item.owner !== userEmail);
-          
-          if (isSharedItem) {
-            const shareId = (item as any).originalSharedId || item.id;
-            const recipients = sharedFilesManager.getShareRecipients(shareId);
-            
-            if (recipients.includes(userEmail)) {
-              console.log(`   🗑️ Unsharing ${item.name} (${shareId}) from ${userEmail}`);
-              sharedFilesManager.unshareFile(shareId, userEmail);
-            }
-          }
-        });
-        console.log('✅ [BULK_PERM_DELETE] Share entries removed from registry');
-        
-        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
-        sharedFilesManager.triggerSync();
-        console.log('✅ [BULK_PERM_DELETE] Receiver shared items permanently hidden');
-      } catch (e) {
-        console.error('❌ [BULK_PERM_DELETE] Failed to hide shared items', e);
-      }
-      
-      setDeletedFiles(deletedFiles.filter((f) => !uniqueFilesToDelete.some((d) => d.id === f.id)));
+      // ✅ OPTIMISTIC: Update UI immediately
+      setDeletedFiles((prev) => prev.filter((f) => !uniqueFilesToDelete.some((d) => d.id === f.id)));
       setSelectedFiles(new Set());
+      
+      // ✅ BACKGROUND: Run API calls without blocking UI
+      (async () => {
+        try {
+          const sharedItems = uniqueFilesToDelete.filter(item => 
+            !!(item as any).sharedMeta ||
+            !!(item as any).originalSharedId ||
+            (item.isSharedFile && item.owner && item.owner !== userEmail)
+          );
+
+          // Add each to hidden_shares via API (API expects individual items)
+          for (const item of sharedItems) {
+            const fileId = (item as any).originalSharedId || item.id;
+            try {
+              await apiCall('/api/shares/hidden', {
+                method: 'POST',
+                body: JSON.stringify({ shareId: fileId, fileId: fileId })
+              });
+            } catch (e) {
+              // Continue even if one fails
+            }
+          }
+
+          // Remove each from receiver_trashed_shares
+          for (const item of sharedItems) {
+            const fileId = (item as any).originalSharedId || item.id;
+            try {
+              await apiCall('/api/shares/trashed', {
+                method: 'DELETE',
+                body: JSON.stringify({ fileId })
+              });
+            } catch (e) {
+              // Continue even if one fails
+            }
+          }
+
+          // ✅ FIX: Receiver permanently deleting DOES unshare
+          // This removes the Share record so the sender can re-share if they want
+          for (const item of sharedItems) {
+            const fileId = (item as any).originalSharedId || item.id;
+            try {
+              await apiCall('/api/shares', {
+                method: 'DELETE',
+                body: JSON.stringify({ fileId, recipientEmail: userEmail })
+              });
+              console.log(`✅ [BULK_PERM_DELETE] Removed share for ${item.name}`);
+            } catch (e) {
+              console.error(`Failed to unshare ${fileId}:`, e);
+            }
+          }
+        } catch (e) {
+          console.error('❌ [BULK_PERM_DELETE] Background API calls failed', e);
+        }
+      })();
+      
       return;
     }
 
     // SCENARIO 2: Sender permanently deleting - remove all shares
-    uniqueFilesToDelete.forEach(item => {
-      try {
-        if (item.owner === userEmail) {
-          const recipients = sharedFilesManager.getShareRecipients(item.id);
+    try {
+      for (const item of uniqueFilesToDelete) {
+        if (emailsMatch(item.owner, userEmail)) {
+          console.log('💥 [BULK_PERM_DELETE] SENDER permanently deleting:', item.name);
           
-          if (recipients.length > 0) {
-            console.log('💥 [BULK_PERM_DELETE] SENDER permanently deleting shared file:', item.name);
-            
-            // ✅ FIX: Get ALL descendants to clean temp_deleted properly
-            const getAllIds = (items: FileItem[], currentId: string): string[] => {
-              const result = [currentId];
-              const children = items.filter(f => f.parentFolderId === currentId);
-              children.forEach(child => {
-                result.push(...getAllIds(items, child.id));
-              });
-              return result;
-            };
-            
-            const allIdsToClean = getAllIds(uniqueFilesToDelete, item.id);
-            
-            recipients.forEach(recipientEmail => {
-              const key = `temp_deleted_shares_${recipientEmail}`;
-              const existing = localStorage.getItem(key);
-              
-              if (existing) {
-                const deletedList = JSON.parse(existing);
-                const filtered = deletedList.filter((fileId: string) => !allIdsToClean.includes(fileId));
-                
-                if (filtered.length > 0) {
-                  localStorage.setItem(key, JSON.stringify(filtered));
-                } else {
-                  localStorage.removeItem(key);
-                }
-              }
-            });
-            
-            sharedFilesManager.removeAllSharesForFileRecursive(item.id);
-            console.log('✅ [BULK_PERM_DELETE] All share entries removed for', item.id);
+          // Remove all shares for this file via API
+          const response = await fetch(`/api/shares/all?fileId=${item.id}&recursive=true`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${authToken}`,
+            },
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            console.log(`✅ [BULK_PERM_DELETE] Removed ${result.count} share(s) for ${item.name}`);
+          } else {
+            console.error(`❌ [BULK_PERM_DELETE] Failed to remove shares for ${item.name}`);
           }
         }
-      } catch (e) {
-        console.error('❌ [BULK_PERM_DELETE] Failed to remove shares on permanent delete', e);
       }
-    });
-
-    // Trigger sync for receivers
-    try {
-      window.dispatchEvent(new Event(SHARED_FILES_EVENT));
     } catch (e) {
-      console.error('Failed to trigger sync event', e);
+      console.error('❌ [BULK_PERM_DELETE] Failed to remove shares on permanent delete', e);
     }
 
-    // Delete file data
-    for (const item of uniqueFilesToDelete) {
-      if (item.type === 'file') {
-        try {
-          await fileStorage.deleteFile(item.id);
-          console.log('🗑️ [BULK_PERM_DELETE] Deleted file data from storage:', item.id);
-        } catch (error) {
-          console.error('❌ [BULK_PERM_DELETE] Failed to delete file from storage:', error);
-        }
+    // Delete files permanently from database
+    try {
+      const fileIds = uniqueFilesToDelete.map(f => f.id);
+      
+      const response = await fetch('/api/files/permanent-delete', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ fileIds }),
+      });
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error('❌ [BULK_PERM_DELETE] Failed to permanently delete:', result.error);
+        alert('Failed to permanently delete files. Please try again.');
+        return;
       }
+
+      const result = await response.json();
+      console.log(`✅ [BULK_PERM_DELETE] ${result.message}`);
+
+    } catch (error) {
+      console.error('❌ [BULK_PERM_DELETE] Error permanently deleting:', error);
+      alert('Failed to permanently delete files. Please try again.');
+      return;
     }
 
+    // Update local state
     setDeletedFiles(deletedFiles.filter((f) => !uniqueFilesToDelete.some((d) => d.id === f.id)));
     setStorageUsed((prev) => Math.max(0, prev - uniqueFilesToDelete.reduce((acc, item) => acc + (item.size || 0), 0)));
     setSelectedFiles(new Set());
@@ -3081,33 +3504,65 @@ export function useVault(userEmail: string, userName?: string) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
       setSortBy(column);
-      setSortOrder('asc');
+      // ✅ FIX: Default to desc for modified (newest first) and asc for name (A-Z)
+      setSortOrder(column === 'modified' ? 'desc' : 'asc');
     }
   };
 
-  // ─── filter / sort / display ────────────────────────────────────────
-  const getFilteredFiles = () => {
+// ─── filter / sort / display ────────────────────────────────────────
+  const getFilteredFiles = async () => {
     let baseFiles: FileItem[] = [];
+
+    // Fetch metadata from API once for all tabs
+    let tempDeletedList: string[] = [];
+    let hiddenList: string[] = [];
+    let receiverTrashedList: string[] = [];
+
+    try {
+      // Fetch temp_deleted_shares
+      const tempDeletedResponse = await fetch('/api/shares/temp-deleted', {
+        headers: { 'Authorization': `Bearer ${authToken}` },
+      });
+      if (tempDeletedResponse.ok) {
+        const result = await tempDeletedResponse.json();
+        tempDeletedList = result.data.map((item: any) => item.fileId);
+      }
+
+      // Fetch hidden_shares
+      const hiddenResponse = await fetch('/api/shares/hidden', {
+        headers: { 'Authorization': `Bearer ${authToken}` },
+      });
+      if (hiddenResponse.ok) {
+        const result = await hiddenResponse.json();
+        hiddenList = result.data.map((item: any) => item.fileId);
+      }
+
+      // Fetch receiver_trashed_shares
+      const trashedResponse = await fetch('/api/shares/trashed', {
+        headers: { 'Authorization': `Bearer ${authToken}` },
+      });
+      if (trashedResponse.ok) {
+        const result = await trashedResponse.json();
+        receiverTrashedList = result.data.map((item: any) => item.fileId);
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch metadata:', error);
+    }
+
+    // Check deletedFiles for tombstones
+    const deletedSharedIds = new Set<string>();
+    deletedFiles.forEach(df => {
+      if (df.isSharedFile || (df as any).originalSharedId || (df as any).tombstone) {
+        deletedSharedIds.add(df.id);
+        const origId = (df as any).originalSharedId;
+        if (origId) deletedSharedIds.add(origId);
+      }
+    });
 
     switch (currentTab) {
       case 'vault':
-        // ✅ FIX: Filter out receiver-trashed shared items
-        const receiverTrashedKeyVault = `receiver_trashed_shares_${userEmail}`;
-        const receiverTrashedDataVault = localStorage.getItem(receiverTrashedKeyVault);
-        const receiverTrashedListVault: string[] = receiverTrashedDataVault ? JSON.parse(receiverTrashedDataVault) : [];
-        
-        // 🔥 NEW: Check deletedFiles for tombstones (same pattern as shared tab)
-        const deletedSharedIdsVault = new Set<string>();
-        deletedFiles.forEach(df => {
-          if (df.isSharedFile || (df as any).originalSharedId || (df as any).tombstone) {
-            deletedSharedIdsVault.add(df.id);
-            const origId = (df as any).originalSharedId;
-            if (origId) deletedSharedIdsVault.add(origId);
-          }
-        });
-        
         // ✅ CRITICAL: If we're inside a folder that's in receiver's trash, show NOTHING
-        if (currentFolderId && (receiverTrashedListVault.includes(currentFolderId) || deletedSharedIdsVault.has(currentFolderId))) {
+        if (currentFolderId && (receiverTrashedList.includes(currentFolderId) || deletedSharedIds.has(currentFolderId))) {
           console.log(`🗑️ [VAULT] Current folder ${currentFolderId} is in receiver's trash - showing nothing`);
           baseFiles = [];
           break;
@@ -3118,20 +3573,24 @@ export function useVault(userEmail: string, userName?: string) {
           const matchesFolder = currentFolderId ? f.parentFolderId === currentFolderId : !f.parentFolderId;
           if (!matchesFolder) return false;
           
+          // ✅ FIX: Show BOTH own files AND received shares in Cloud Drive
+          // This allows receiver to navigate into shared folders and upload
+          // (Shared Items tab still shows received shares for easy access)
+          
           // ✅ CRITICAL: Filter out ANY item that receiver has in their trash
-          if (receiverTrashedListVault.includes(f.id)) {
+          if (receiverTrashedList.includes(f.id)) {
             console.log(`🗑️ [VAULT] Filtering out receiver-trashed item: ${f.name} (ID: ${f.id})`);
             return false;
           }
           
           // 🔥 CRITICAL: Filter out tombstones from deletedFiles
-          if (deletedSharedIdsVault.has(f.id)) {
+          if (deletedSharedIds.has(f.id)) {
             console.log(`🗑️ [VAULT] Filtering out tombstone: ${f.name}`);
             return false;
           }
           
           // ✅ CRITICAL: Also check if parent folder is in receiver's trash OR is a tombstone
-          if (f.parentFolderId && (receiverTrashedListVault.includes(f.parentFolderId) || deletedSharedIdsVault.has(f.parentFolderId))) {
+          if (f.parentFolderId && (receiverTrashedList.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
             console.log(`🗑️ [VAULT] Filtering out "${f.name}" - parent folder in receiver's trash`);
             return false;
           }
@@ -3140,41 +3599,52 @@ export function useVault(userEmail: string, userName?: string) {
         });
         break;
 
-      // ✅ FIX 1: Folder navigation for shared files
       case 'shared':
-        const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-        const tempDeleted = localStorage.getItem(tempDeletedKey);
-        const tempDeletedList: string[] = tempDeleted ? JSON.parse(tempDeleted) : [];
-        
-        const hiddenKey = `hidden_shares_${userEmail}`;
-        const hiddenData = localStorage.getItem(hiddenKey);
-        const hiddenList: string[] = hiddenData ? JSON.parse(hiddenData) : [];
-        
-        // 🔥 NEW: Get receiver's trashed shares
-        const receiverTrashedKeyShared = `receiver_trashed_shares_${userEmail}`;
-        const receiverTrashedDataShared = localStorage.getItem(receiverTrashedKeyShared);
-        const receiverTrashedListShared: string[] = receiverTrashedDataShared ? JSON.parse(receiverTrashedDataShared) : [];
-        
-        // Also check deletedFiles for IDs (in case of tombstones with originalSharedId)
-        const deletedSharedIds = new Set<string>();
-        deletedFiles.forEach(df => {
-          if (df.isSharedFile || (df as any).originalSharedId) {
-            deletedSharedIds.add(df.id);
-            const origId = (df as any).originalSharedId;
-            if (origId) deletedSharedIds.add(origId);
-          }
-        });
-        
         console.log(`📂 [SHARED TAB] Current folder: ${currentFolderId || 'ROOT'}`);
-        console.log(`   Temp deleted: ${tempDeletedList.length}, Hidden: ${hiddenList.length}, Receiver trashed: ${receiverTrashedListShared.length}`);
+        console.log(`   Temp deleted: ${tempDeletedList.length}, Hidden: ${hiddenList.length}, Receiver trashed: ${receiverTrashedList.length}`);
         console.log(`   Deleted shared IDs from deletedFiles: ${deletedSharedIds.size}`, Array.from(deletedSharedIds));
         
-        // ✅ FIX: Respect currentFolderId for shared files (same logic as vault tab)
+        // ✅ FIX: Check if we're inside a received shared folder
+        // If yes, show ALL files inside it (including own uploads to shared folder)
+        const currentFolderIsReceivedShare = currentFolderId && files.some(f => 
+          f.id === currentFolderId && (f as any).isReceivedShare
+        );
+        
         baseFiles = files.filter((f) => {
-          // Must be a shared file
-          if (!f.isSharedFile) {
+          const isReceivedShare = !!(f as any).isReceivedShare;
+          
+          // ✅ FIX: If we're inside a received shared folder, show ALL files in it
+          // This includes both received shares AND own files uploaded to shared folder
+          if (currentFolderIsReceivedShare) {
+            // Just check if file is in this folder
+            const matchesFolder = f.parentFolderId === currentFolderId;
+            if (!matchesFolder) return false;
+            
+            console.log(`   📁 [SHARED/INSIDE] "${f.name}" isReceived=${isReceivedShare}, matchesFolder=${matchesFolder}`);
+            
+            // Still filter out trashed items
+            if (receiverTrashedList.includes(f.id) || deletedSharedIds.has(f.id)) {
+              console.log(`   🗑️ Filtering out receiver-trashed: ${f.name} (${f.id})`);
+              return false;
+            }
+            if (tempDeletedList.includes(f.id)) {
+              console.log(`   ⏳ Filtering out temp-deleted: ${f.name} (${f.id})`);
+              return false;
+            }
+            if (hiddenList.includes(f.id)) {
+              console.log(`   🚫 Filtering out permanently hidden: ${f.name} (${f.id})`);
+              return false;
+            }
+            
+            return true;
+          }
+          
+          // At ROOT or inside non-received folder: ONLY show received shares
+          if (!isReceivedShare) {
             return false;
           }
+          
+          console.log(`   📤 [SHARED] "${f.name}" isReceived=${isReceivedShare}`);
           
           // Must not be temp deleted
           if (tempDeletedList.includes(f.id)) {
@@ -3189,29 +3659,44 @@ export function useVault(userEmail: string, userName?: string) {
           }
           
           // 🔥 CRITICAL: Must not be in receiver's trash OR deletedFiles
-          if (receiverTrashedListShared.includes(f.id) || deletedSharedIds.has(f.id)) {
+          if (receiverTrashedList.includes(f.id) || deletedSharedIds.has(f.id)) {
             console.log(`   🗑️ Filtering out receiver-trashed: ${f.name} (${f.id})`, {
-              inReceiverTrashed: receiverTrashedListShared.includes(f.id),
+              inReceiverTrashed: receiverTrashedList.includes(f.id),
               inDeletedFiles: deletedSharedIds.has(f.id)
             });
             return false;
           }
           
           // 🔥 NEW: If file has a parent folder, check if parent is in receiver's trash
-          if (f.parentFolderId && (receiverTrashedListShared.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
+          if (f.parentFolderId && (receiverTrashedList.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
             console.log(`   🗑️ Filtering out (parent folder in receiver's trash): ${f.name} (${f.id})`);
             return false;
           }
           
-          // ✅ NEW: Filter by current folder (same logic as vault tab)
+          // ✅ Filter by current folder with special handling for Shared Items
           if (currentFolderId) {
             const matches = f.parentFolderId === currentFolderId;
             console.log(`   📁 "${f.name}" parent=${f.parentFolderId}, current=${currentFolderId}, matches=${matches}`);
             return matches;
           } else {
-            const isRoot = !f.parentFolderId;
-            console.log(`   📁 "${f.name}" parent=${f.parentFolderId}, at root=${isRoot}`);
-            return isRoot;
+            // At ROOT level of Shared Items tab
+            const isAtRoot = !f.parentFolderId;
+            
+            // ✅ For received shares: check if parent folder is ALSO a received share
+            // If parent is NOT a received share (i.e., it's the user's own folder or doesn't exist in shares),
+            // then show this item at root level in Shared Items
+            if (isReceivedShare && f.parentFolderId) {
+              const parentIsReceivedShare = files.some(p => 
+                p.id === f.parentFolderId && (p as any).isReceivedShare
+              );
+              if (!parentIsReceivedShare) {
+                console.log(`   📁 "${f.name}" parent=${f.parentFolderId} is NOT a shared folder, showing at root`);
+                return true; // Show at root because parent is user's own folder
+              }
+            }
+            
+            console.log(`   📁 "${f.name}" parent=${f.parentFolderId}, at root=${isAtRoot}`);
+            return isAtRoot;
           }
         });
         
@@ -3219,40 +3704,25 @@ export function useVault(userEmail: string, userName?: string) {
         break;
 
       case 'favorites':
-        // ✅ FIX: Filter out receiver-trashed items
-        const receiverTrashedKeyFav = `receiver_trashed_shares_${userEmail}`;
-        const receiverTrashedDataFav = localStorage.getItem(receiverTrashedKeyFav);
-        const receiverTrashedListFav: string[] = receiverTrashedDataFav ? JSON.parse(receiverTrashedDataFav) : [];
-        
-        // 🔥 NEW: Check deletedFiles for tombstones (same pattern as shared tab)
-        const deletedSharedIdsFav = new Set<string>();
-        deletedFiles.forEach(df => {
-          if (df.isSharedFile || (df as any).originalSharedId || (df as any).tombstone) {
-            deletedSharedIdsFav.add(df.id);
-            const origId = (df as any).originalSharedId;
-            if (origId) deletedSharedIdsFav.add(origId);
-          }
-        });
-        
         if (currentFolderId) {
           baseFiles = files.filter((f) => {
             // Must match folder
             if (f.parentFolderId !== currentFolderId) return false;
             
             // ✅ CRITICAL: Filter out receiver-trashed items
-            if (receiverTrashedListFav.includes(f.id)) {
+            if (receiverTrashedList.includes(f.id)) {
               console.log(`🗑️ [FAVORITES] Filtering out receiver-trashed: ${f.name}`);
               return false;
             }
             
             // 🔥 CRITICAL: Filter out tombstones from deletedFiles
-            if (deletedSharedIdsFav.has(f.id)) {
+            if (deletedSharedIds.has(f.id)) {
               console.log(`🗑️ [FAVORITES] Filtering out tombstone: ${f.name}`);
               return false;
             }
             
             // ✅ CRITICAL: Filter out if parent is in receiver's trash OR is a tombstone
-            if (f.parentFolderId && (receiverTrashedListFav.includes(f.parentFolderId) || deletedSharedIdsFav.has(f.parentFolderId))) {
+            if (f.parentFolderId && (receiverTrashedList.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
               console.log(`🗑️ [FAVORITES] Filtering out "${f.name}" - parent in trash`);
               return false;
             }
@@ -3264,19 +3734,19 @@ export function useVault(userEmail: string, userName?: string) {
             if (!f.isFavorite) return false;
             
             // ✅ CRITICAL: Filter out receiver-trashed items
-            if (receiverTrashedListFav.includes(f.id)) {
+            if (receiverTrashedList.includes(f.id)) {
               console.log(`🗑️ [FAVORITES] Filtering out receiver-trashed: ${f.name}`);
               return false;
             }
             
             // 🔥 CRITICAL: Filter out tombstones from deletedFiles
-            if (deletedSharedIdsFav.has(f.id)) {
+            if (deletedSharedIds.has(f.id)) {
               console.log(`🗑️ [FAVORITES] Filtering out tombstone: ${f.name}`);
               return false;
             }
             
             // ✅ CRITICAL: Filter out if parent is in receiver's trash OR is a tombstone
-            if (f.parentFolderId && (receiverTrashedListFav.includes(f.parentFolderId) || deletedSharedIdsFav.has(f.parentFolderId))) {
+            if (f.parentFolderId && (receiverTrashedList.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
               console.log(`🗑️ [FAVORITES] Filtering out "${f.name}" - parent in trash`);
               return false;
             }
@@ -3291,21 +3761,6 @@ export function useVault(userEmail: string, userName?: string) {
         break;
 
       case 'recent':
-        // ✅ FIX: Filter out receiver-trashed items
-        const receiverTrashedKeyRecent = `receiver_trashed_shares_${userEmail}`;
-        const receiverTrashedDataRecent = localStorage.getItem(receiverTrashedKeyRecent);
-        const receiverTrashedListRecent: string[] = receiverTrashedDataRecent ? JSON.parse(receiverTrashedDataRecent) : [];
-        
-        // 🔥 NEW: Check deletedFiles for tombstones
-        const deletedSharedIdsRecent = new Set<string>();
-        deletedFiles.forEach(df => {
-          if (df.isSharedFile || (df as any).originalSharedId || (df as any).tombstone) {
-            deletedSharedIdsRecent.add(df.id);
-            const origId = (df as any).originalSharedId;
-            if (origId) deletedSharedIdsRecent.add(origId);
-          }
-        });
-        
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
         baseFiles = files.filter((f) => {
@@ -3313,19 +3768,19 @@ export function useVault(userEmail: string, userName?: string) {
           if (new Date(f.createdAt) < sevenDaysAgo) return false;
           
           // ✅ CRITICAL: Filter out receiver-trashed items
-          if (receiverTrashedListRecent.includes(f.id)) {
+          if (receiverTrashedList.includes(f.id)) {
             console.log(`🗑️ [RECENTS] Filtering out receiver-trashed: ${f.name}`);
             return false;
           }
           
           // 🔥 CRITICAL: Filter out tombstones from deletedFiles
-          if (deletedSharedIdsRecent.has(f.id)) {
+          if (deletedSharedIds.has(f.id)) {
             console.log(`🗑️ [RECENTS] Filtering out tombstone: ${f.name}`);
             return false;
           }
           
           // ✅ CRITICAL: Filter out if parent is in receiver's trash OR is a tombstone
-          if (f.parentFolderId && (receiverTrashedListRecent.includes(f.parentFolderId) || deletedSharedIdsRecent.has(f.parentFolderId))) {
+          if (f.parentFolderId && (receiverTrashedList.includes(f.parentFolderId) || deletedSharedIds.has(f.parentFolderId))) {
             console.log(`🗑️ [RECENTS] Filtering out "${f.name}" - parent in trash`);
             return false;
           }
@@ -3336,16 +3791,17 @@ export function useVault(userEmail: string, userName?: string) {
         break;
 
       case 'trash':
-        // ✅ NEW FIX: Get receiver's trashed shared items
-        const receiverTrashedKey = `receiver_trashed_shares_${userEmail}`;
-        const receiverTrashedData = localStorage.getItem(receiverTrashedKey);
-        const receiverTrashedList: string[] = receiverTrashedData ? JSON.parse(receiverTrashedData) : [];
-        
         console.log(`🗑️ [TRASH TAB] Receiver trashed shares: ${receiverTrashedList.length}`);
         
         // Get shared items that are in receiver's trash (still in files array, not deletedFiles)
         const receiverTrashedSharedItems = files.filter(f => {
           if (!receiverTrashedList.includes(f.id)) return false;
+          
+          // ✅ FIX: Hide if sender also has it in trash (temp_deleted)
+          if (tempDeletedList.includes(f.id)) {
+            console.log(`🗑️ [TRASH TAB] Hiding "${f.name}" - sender also has in trash (temp_deleted)`);
+            return false;
+          }
           
           // Respect folder hierarchy
           const matchesFolder = currentFolderId ? f.parentFolderId === currentFolderId : !f.parentFolderId;
@@ -3357,41 +3813,34 @@ export function useVault(userEmail: string, userName?: string) {
         
         console.log(`🗑️ [TRASH TAB] Found ${receiverTrashedSharedItems.length} receiver-trashed shared items`);
         
-        // ✅ FIX: Filter out shared items when both sender AND receiver have in trash
+        // ✅ Filter out shared items when both sender AND receiver have in trash
         const tombstones = deletedFiles.filter((f) => {
           // First, check folder hierarchy
           const matchesFolder = currentFolderId ? f.parentFolderId === currentFolderId : !f.parentFolderId;
           if (!matchesFolder) return false;
           
-          // Check if this is a received shared file tombstone
-          const isReceivedShareTombstone = !!(f as any).sharedMeta || !!(f as any).originalSharedId;
+          // Check if this is a received shared file tombstone (multiple ways to detect)
+          const isReceivedShareTombstone = !!(f as any).sharedMeta || 
+                                            !!(f as any).originalSharedId || 
+                                            !!(f as any).isSharedFile ||
+                                            !!(f as any).isReceivedShare;
           
-          if (isReceivedShareTombstone) {
-            // Get the original file ID
-            const fileId = (f as any).originalSharedId || f.id;
-            
-            // Check if sender has it in their trash (temp_deleted)
-            const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-            try {
-              const tempDeletedData = localStorage.getItem(tempDeletedKey);
-              if (tempDeletedData) {
-                const tempDeletedList: string[] = JSON.parse(tempDeletedData);
-                const senderHasInTrash = tempDeletedList.includes(fileId);
-                
-                if (senderHasInTrash) {
-                  console.log(`🗑️ [TRASH TAB] Hiding "${f.name}" - both sender and receiver have in trash`);
-                  return false; // Hide when both have in trash
-                }
-              }
-            } catch (e) {
-              console.error('❌ [TRASH TAB] Error checking temp_deleted:', e);
-            }
+          // Get the original file ID (try multiple properties)
+          const fileId = (f as any).originalSharedId || f.id;
+          
+          // Check if sender has it in their trash (temp_deleted)
+          const senderHasInTrash = tempDeletedList.includes(fileId);
+          
+          // ✅ CRITICAL: Always check temp_deleted for any file in trash (shared or not)
+          if (senderHasInTrash && isReceivedShareTombstone) {
+            console.log(`🗑️ [TRASH TAB] Hiding "${f.name}" - sender trashed this shared item`);
+            return false; // Hide when sender has it in trash
           }
           
           return true;
         });
         
-        // ✅ NEW: Combine tombstones with receiver-trashed shared items
+        // ✅ Combine tombstones with receiver-trashed shared items
         baseFiles = [...tombstones, ...receiverTrashedSharedItems];
         console.log(`🗑️ [TRASH TAB] Total items in trash: ${baseFiles.length} (${tombstones.length} tombstones + ${receiverTrashedSharedItems.length} receiver-trashed)`);
         break;
@@ -3402,6 +3851,7 @@ export function useVault(userEmail: string, userName?: string) {
         );
     }
 
+    // Apply filters
     if (filters.type !== 'All') {
       if (filters.type === 'Folders') {
         if (!currentFolderId) {
@@ -3450,13 +3900,14 @@ export function useVault(userEmail: string, userName?: string) {
       }
     }
 
+    // Apply sorting
     if (sortBy && currentTab !== 'recent') {
       baseFiles = [...baseFiles].sort((a, b) => {
         let comparison = 0;
 
         if (sortBy === 'name') {
           comparison = a.name.localeCompare(b.name);
-        } else if (sortBy === 'modified') {
+          } else if (sortBy === 'modified') {
           comparison = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
         }
 
@@ -3466,50 +3917,78 @@ export function useVault(userEmail: string, userName?: string) {
 
     return baseFiles;
   };
+// start here later
+  const [displayFiles, setDisplayFiles] = useState<FileItem[]>([]);
 
-  const displayFiles = getFilteredFiles();
+  // Update displayFiles whenever dependencies change
+  useEffect(() => {
+    const loadDisplayFiles = async () => {
+      const filtered = await getFilteredFiles();
+      setDisplayFiles(filtered);
+    };
+    loadDisplayFiles();
+  }, [files, deletedFiles, currentTab, currentFolderId, filters, sortBy, sortOrder]);
 
-  const getSharedFilesCount = (): number => {
-    try {
-      const all = sharedFilesManager.getSharedWithMe(userEmail);
-      
-      const tempDeletedKey = `temp_deleted_shares_${userEmail}`;
-      const tempDeleted = localStorage.getItem(tempDeletedKey);
-      const tempDeletedList: string[] = tempDeleted ? JSON.parse(tempDeleted) : [];
-      
-      const filtered = all.filter((s) => {
-        try {
-          if (tempDeletedList.includes(s.fileId)) return false;
-          
-          if (deletedFiles.some((d) => d.id === s.fileId || (d as any).sharedMeta?.fileId === s.fileId || (d as any).originalSharedId === s.fileId)) {
-            return false;
-          }
-          try {
-            const raw = localStorage.getItem(`trash_${userEmail}`);
-            if (raw) {
-              const parsed = JSON.parse(raw) as any[];
-              if (parsed.some((d) => d && (d.id === s.fileId || (d.sharedMeta && d.sharedMeta.fileId === s.fileId) || d.originalSharedId === s.fileId))) {
-                return false;
-              }
-            }
-          } catch (e) {
-            // ignore
-          }
-          return true;
-        } catch (e) {
-          return true;
+  // ✅ FIX: Compute shared files count from actual files array (always accurate, even after optimistic updates)
+  const getSharedFilesCount = useCallback((): number => {
+    // Count ALL received shares that are NOT in trash (not in deletedFiles)
+    const deletedIds = new Set(deletedFiles.map(d => d.id).concat(deletedFiles.map(d => (d as any).originalSharedId).filter(Boolean)));
+    
+    // Get all received shared folder IDs
+    const receivedSharedFolderIds = new Set(
+      files.filter(f => (f as any).isReceivedShare && f.type === 'folder').map(f => f.id)
+    );
+    
+    // Build a set of all folder IDs that are inside received shared folders (recursive)
+    const allSharedFolderIds = new Set(receivedSharedFolderIds);
+    let foundNew = true;
+    while (foundNew) {
+      foundNew = false;
+      for (const f of files) {
+        if (f.type === 'folder' && f.parentFolderId && allSharedFolderIds.has(f.parentFolderId) && !allSharedFolderIds.has(f.id)) {
+          allSharedFolderIds.add(f.id);
+          foundNew = true;
         }
-      });
-      return filtered.length;
-    } catch (e) {
-      return 0;
+      }
     }
-  };
+    
+    const count = files.filter(f => {
+      // Must not be in deletedFiles
+      if (deletedIds.has(f.id)) return false;
+      
+      // Count if it's a received share
+      if ((f as any).isReceivedShare) return true;
+      
+      // ✅ NEW: Also count files the current user uploaded INSIDE a received shared folder (any level)
+      // These are owned by the user but their parent is a received share or inside one
+      if (f.parentFolderId && allSharedFolderIds.has(f.parentFolderId)) {
+        return true;
+      }
+      
+      return false;
+    }).length;
+    
+    return count;
+  }, [files, deletedFiles]);
+  
+  // ✅ FIX: Compute visible trash count (excludes shared items when sender trashed them)
+  const getVisibleTrashCount = useCallback((): number => {
+    // Get temp_deleted list from any shared item we can find
+    // For simplicity, count all deletedFiles that are root-level and not hidden by sender
+    const count = deletedFiles.filter(f => {
+      // Only count root-level items (items inside folders are counted as part of parent)
+      if (f.parentFolderId) return false;
+      return true;
+    }).length;
+    
+    return count;
+  }, [deletedFiles]);
 
-  const handleCleanupGlitchedFiles = () => {
+const handleCleanupGlitchedFiles = async () => {
     if (!ensureUser('handleCleanupGlitchedFiles')) return;
     
     try {
+      // Clean orphaned items from deletedFiles (client-side only - these are tombstones)
       const cleanedTrash = deletedFiles.filter(f => {
         if (!f.parentFolderId) return true;
         
@@ -3523,6 +4002,9 @@ export function useVault(userEmail: string, userName?: string) {
       
       setDeletedFiles(cleanedTrash);
       
+      // Clean orphaned items from files (client-side check, but we'll also sync with API)
+      const orphanedFileIds: string[] = [];
+      
       const cleanedFiles = files.filter(f => {
         if (!f.parentFolderId) return true;
         if (f.isSharedFile) return true;
@@ -3530,12 +4012,33 @@ export function useVault(userEmail: string, userName?: string) {
         const parentExists = files.some(p => p.id === f.parentFolderId && p.type === 'folder');
         if (!parentExists) {
           console.log(`🧹 Removing orphaned file: ${f.name}`);
+          orphanedFileIds.push(f.id);
           return false;
         }
         return true;
       });
       
       setFiles(cleanedFiles);
+      
+      // If we found orphaned files, delete them from the database too
+      if (orphanedFileIds.length > 0) {
+        console.log(`🧹 Deleting ${orphanedFileIds.length} orphaned files from database...`);
+        
+        const response = await fetch('/api/files/cleanup-orphaned', {
+          method: 'DELETE',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ fileIds: orphanedFileIds }),
+        });
+
+        if (!response.ok) {
+          console.error('❌ Failed to cleanup orphaned files in database');
+        } else {
+          console.log('✅ Orphaned files cleaned from database');
+        }
+      }
       
       console.log('✨ Cleanup complete');
       alert('Cleanup complete! Removed orphaned/glitched files.');
@@ -3583,6 +4086,7 @@ export function useVault(userEmail: string, userName?: string) {
     handleBulkPermanentDelete,
     handleSortChange,
     getSharedFilesCount,
+    getVisibleTrashCount,
     handleCleanupGlitchedFiles,
   };
 }

@@ -1,8 +1,12 @@
+// FILE LOCATION: app/register/page.tsx
+// FIXED: Uses API + keeps your recovery key modal
+
 "use client";
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSession } from "@/lib/session";
+import { storePasswordHash } from "@/lib/crypto";
 import { ensureRecoveryKeyExists, downloadRecoveryKey } from "@/lib/recoveryKey";
 
 import AuthLayout from "@/components/auth/AuthLayout";
@@ -36,23 +40,22 @@ export default function RegisterPage() {
   const [emailAlreadyUsed, setEmailAlreadyUsed] = useState(false);
   const [passwordError, setPasswordError] = useState(false);
   const [confirmError, setConfirmError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Recovery key modal state
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserFirstName, setNewUserFirstName] = useState("");
+  const [newUserLastName, setNewUserLastName] = useState("");
   const [copied, setCopied] = useState(false);
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     const first = firstNameRef.current?.value.trim() ?? "";
     const last = lastNameRef.current?.value.trim() ?? "";
     const email = emailRef.current?.value.trim() ?? "";
     const password = passwordRef.current?.value ?? "";
     const confirm = confirmRef.current?.value ?? "";
-
-    // Check if email already exists
-    const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
-    const emailExists = accounts.some((acc: any) => acc.email === email);
 
     const firstInvalid = !first || !isOnlyLetters(first);
     const lastInvalid = !last || !isOnlyLetters(last);
@@ -63,7 +66,6 @@ export default function RegisterPage() {
     setFirstNameError(firstInvalid);
     setLastNameError(lastInvalid);
     setEmailError(emailInvalid);
-    setEmailAlreadyUsed(emailExists && !emailInvalid);
     setPasswordError(passwordInvalid);
     setConfirmError(confirmInvalid);
 
@@ -71,43 +73,86 @@ export default function RegisterPage() {
       firstInvalid ||
       lastInvalid ||
       emailInvalid ||
-      emailExists ||
       passwordInvalid ||
       confirmInvalid
     ) {
       return;
     }
 
-    // ✅ All valid — save account data
-    if (!accounts.find((acc: any) => acc.email === email)) {
-      accounts.push({
-        email,
-        firstName: first,
-        lastName: last,
-        password, // In production, this should be hashed
+    setIsLoading(true);
+    setEmailAlreadyUsed(false);
+
+    try {
+      // ✅ CALL API
+      const response = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          firstName: first,
+          lastName: last
+        })
       });
-      localStorage.setItem('userAccounts', JSON.stringify(accounts));
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (data.error === 'User already exists') {
+          setEmailAlreadyUsed(true);
+        } else {
+          alert(data.error || 'Registration failed');
+        }
+        setIsLoading(false);
+        return;
+      }
+
+      // ✅ CRITICAL FIX: Clear ALL old session data before setting new
+      // This prevents cross-user data contamination
+      sessionStorage.clear(); // Clear all sessionStorage
+      localStorage.removeItem('user_session');
+      localStorage.removeItem('session');
+      localStorage.removeItem('user');
+      
+      // ✅ STORE AUTH TOKEN (sessionStorage for per-tab isolation)
+      sessionStorage.setItem('auth_token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+
+      // ✅ STORE SALT FOR ENCRYPTION
+      if (data.salt) {
+        const saltUint8 = new Uint8Array(data.salt);
+        const hexSalt = Array.from(saltUint8)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        localStorage.setItem(`vault_salt_${email}`, hexSalt);
+      }
+
+      // ✅ STORE PASSWORD HASH FOR CLIENT-SIDE VERIFICATION
+      await storePasswordHash(email, password);
+
+      // 🔑 GENERATE RECOVERY KEY
+      const key = ensureRecoveryKeyExists(email);
+      setRecoveryKey(key);
+      setNewUserEmail(email);
+      setNewUserFirstName(first);
+      setNewUserLastName(last);
+      setCopied(false);
+      
+      setIsLoading(false);
+      
+      // Show recovery key modal BEFORE redirecting
+      setShowRecoveryModal(true);
+
+    } catch (error) {
+      console.error('Registration error:', error);
+      alert('An error occurred during registration. Please try again.');
+      setIsLoading(false);
     }
-    
-    // 🔑 GENERATE RECOVERY KEY FOR NEW USER
-    const key = ensureRecoveryKeyExists(email);
-    setRecoveryKey(key);
-    setNewUserEmail(email);
-    setCopied(false);
-    
-    // Show recovery key modal BEFORE creating session
-    setShowRecoveryModal(true);
   };
 
   const handleContinueToVault = () => {
     // Create session and redirect to vault
-    const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
-    const account = accounts.find((acc: any) => acc.email === newUserEmail);
-    
-    if (account) {
-      createSession(newUserEmail, account.firstName, account.lastName);
-    }
-    
+    createSession(newUserEmail, newUserFirstName, newUserLastName);
     router.push("/vault");
   };
 
@@ -127,14 +172,12 @@ export default function RegisterPage() {
 
   return (
     <div className="h-screen bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      {/* Header with perfect fade */}
       <header className="flex justify-between items-center px-12 py-8">
         <div 
           onClick={() => router.push('/start')} 
           className="flex items-center gap-3 cursor-pointer"
         >
-          {/* Temporary Logo - Replace with actual logo later */}
-          <div className="text-3xl">🔐</div>
+          <div className="text-3xl">🔒</div>
           <span className="text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
@@ -198,8 +241,8 @@ export default function RegisterPage() {
             <div className="flex-grow" />
 
             <div className="mt-8 flex justify-end">
-              <AuthButton onClick={handleRegister}>
-                Sign up →
+              <AuthButton onClick={handleRegister} disabled={isLoading}>
+                {isLoading ? 'Creating...' : 'Sign up →'}
               </AuthButton>
             </div>
 
@@ -217,10 +260,9 @@ export default function RegisterPage() {
         right={<AuthRegisterInfo />}
       />
 
-      {/* Recovery Key Modal - MATCHING REFERENCE LAYOUT */}
+      {/* Recovery Key Modal */}
       {showRecoveryModal && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
-          {/* Backdrop */}
           <div
             style={{
               position: 'fixed',
@@ -230,7 +272,6 @@ export default function RegisterPage() {
             }}
           />
 
-          {/* Modal Container */}
           <div
             style={{
               position: 'fixed',
@@ -241,7 +282,6 @@ export default function RegisterPage() {
               padding: '1rem',
             }}
           >
-            {/* Modal */}
             <div
               style={{
                 width: '1050px',
@@ -255,7 +295,6 @@ export default function RegisterPage() {
                 position: 'relative',
               }}
             >
-              {/* Content Container */}
               <div
                 style={{
                   display: 'flex',
@@ -266,7 +305,6 @@ export default function RegisterPage() {
                   padding: '3rem 4rem',
                 }}
               >
-                {/* Icon */}
                 <div style={{ marginBottom: '2rem' }}>
                   <div
                     style={{
@@ -286,18 +324,15 @@ export default function RegisterPage() {
                   </div>
                 </div>
 
-                {/* Title */}
                 <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', color: 'white', marginBottom: '1rem' }}>
                   Account recovery
                 </h2>
                 
-                {/* Description */}
                 <p style={{ textAlign: 'center', color: '#d1d5db', marginBottom: '3rem', maxWidth: '42rem', lineHeight: '1.625' }}>
                   Export and save your recovery key to avoid your data becoming inaccessible should you ever lose your password or authenticator.{' '}
                   <span style={{ color: '#60a5fa', textDecoration: 'underline', cursor: 'pointer' }}>Learn more.</span>
                 </p>
 
-                {/* Recovery Key Box */}
                 <div
                   style={{
                     width: '100%',
@@ -321,7 +356,6 @@ export default function RegisterPage() {
                       </div>
                     </div>
                     
-                    {/* Download Button */}
                     <button
                       onClick={handleDownload}
                       style={{
@@ -350,7 +384,6 @@ export default function RegisterPage() {
                     </button>
                   </div>
                   
-                  {/* Copy Button */}
                   <button
                     onClick={handleCopy}
                     style={{
@@ -391,7 +424,6 @@ export default function RegisterPage() {
                   </button>
                 </div>
 
-                {/* Continue Button */}
                 <button
                   onClick={handleContinueToVault}
                   style={{

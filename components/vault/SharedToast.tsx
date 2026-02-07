@@ -8,26 +8,46 @@ export default function SharedToast() {
   const [visible, setVisible] = useState(false);
   const [message, setMessage] = useState('');
   const prevCount = useRef<number>(0);
+  const isMounted = useRef(true);
+  const isInitialized = useRef(false); // ✅ Prevent false positives during init
 
   useEffect(() => {
+    isMounted.current = true;
+    isInitialized.current = false;
     const session = getSession();
     const userEmail = session?.userEmail || null;
     if (!userEmail) return;
 
-    // Initialize previous count
-    try {
-      prevCount.current = sharedFilesManager.getSharedWithMe(userEmail).length;
-    } catch (e) {
-      prevCount.current = 0;
-    }
-
-    const maybeShow = () => {
+    // Initialize previous count with async call
+    const initCount = async () => {
       try {
-        const current = sharedFilesManager.getSharedWithMe(userEmail).length;
+        const shares = await sharedFilesManager.getSharedWithMeAsync(userEmail);
+        if (isMounted.current) {
+          prevCount.current = shares.length;
+          isInitialized.current = true; // ✅ Mark as initialized
+        }
+      } catch (e) {
+        prevCount.current = 0;
+        isInitialized.current = true;
+      }
+    };
+    initCount();
+
+    const maybeShow = async () => {
+      // ✅ Don't show toast until we've initialized the previous count
+      if (!isInitialized.current) return;
+      
+      try {
+        const shares = await sharedFilesManager.getSharedWithMeAsync(userEmail);
+        if (!isMounted.current) return;
+        
+        const current = shares.length;
         if (current > prevCount.current) {
           setMessage('New shared item received');
           setVisible(true);
-          setTimeout(() => setVisible(false), 4000);
+          setTimeout(() => {
+            if (isMounted.current) setVisible(false);
+          }, 4000);
         }
         prevCount.current = current;
       } catch (e) {
@@ -35,37 +55,13 @@ export default function SharedToast() {
       }
     };
 
-    const handler = (e: Event) => maybeShow();
+    const handler = () => maybeShow();
 
     window.addEventListener(SHARED_FILES_EVENT, handler);
 
-    // BroadcastChannel fallback
-    let bc: any = null;
-    try {
-      if ((window as any).BroadcastChannel) {
-        bc = new (window as any).BroadcastChannel('shared-files-channel');
-        bc.addEventListener('message', (m: MessageEvent) => {
-          if (m?.data?.type === SHARED_FILES_EVENT) maybeShow();
-        });
-      }
-    } catch (e) {
-      // ignore
-    }
-
-    // storage event fallback
-    const storageHandler = (e: StorageEvent) => {
-      if (e.key === '__shared_files_signal' || e.key === 'shared_files_global') {
-        maybeShow();
-      }
-    };
-    window.addEventListener('storage', storageHandler);
-
     return () => {
+      isMounted.current = false;
       window.removeEventListener(SHARED_FILES_EVENT, handler);
-      window.removeEventListener('storage', storageHandler);
-      if (bc) {
-        bc.close();
-      }
     };
   }, []);
 

@@ -104,6 +104,7 @@ export default function VaultPage() {
     handleBulkPermanentDelete,
     handleSortChange,
     getSharedFilesCount,
+    getVisibleTrashCount,
   } = useVault(userEmail, userName);
 
   const [showUploadMenu, setShowUploadMenu] = React.useState(false);
@@ -119,6 +120,7 @@ export default function VaultPage() {
   const [completedUploads, setCompletedUploads] = React.useState<string[]>([]);
   const [shareModalOpen, setShareModalOpen] = React.useState(false);
   const [shareTargetId, setShareTargetId] = React.useState<string | null>(null);
+  const [currentShareRecipients, setCurrentShareRecipients] = React.useState<string[]>([]);
   const [viewingFile, setViewingFile] = React.useState<{ 
     url: string; 
     name: string; 
@@ -160,12 +162,88 @@ export default function VaultPage() {
 
     const session = getSession();
     if (session) {
-      setUserName(session.firstName);
-      setUserLastName(session.lastName || '');
-      setUserEmail(session.userEmail);
+      // ✅ CRITICAL: Auth token is in sessionStorage (tab-specific!)
+      const authToken = sessionStorage.getItem('auth_token');
       
-      // Load profile image
-      const savedImage = localStorage.getItem(`profile_image_${session.userEmail}`);
+      console.log('🔐 [AUTH DEBUG] ==================');
+      console.log('🔐 [AUTH DEBUG] Session userEmail:', session.userEmail);
+      console.log('🔐 [AUTH DEBUG] Auth token exists:', !!authToken);
+      
+      // ✅ CRITICAL: Use auth token to get email (it's tab-specific, unlike localStorage)
+      let finalEmail = session.userEmail;
+      
+      if (authToken) {
+        // Decode JWT payload to get the correct email for THIS tab
+        try {
+          const payload = JSON.parse(atob(authToken.split('.')[1]));
+          console.log('🔐 [AUTH DEBUG] Token email:', payload.email);
+          
+          if (payload.email) {
+            finalEmail = payload.email.toLowerCase();
+          }
+        } catch (e) {
+          console.error('🔐 [AUTH DEBUG] Failed to decode token:', e);
+        }
+      }
+      
+      // Set email immediately (from token - accurate)
+      setUserEmail(finalEmail);
+      console.log('🔐 [VAULT] Email from token:', finalEmail);
+      
+      // ✅ FIX: Fetch user's ACTUAL name from database (not shared localStorage!)
+      // The auth token is tab-specific, so this gets the correct user's profile
+      const fetchProfile = async () => {
+        if (!authToken) {
+          // Fallback to session data if no token
+          setUserName(session.firstName);
+          setUserLastName(session.lastName || '');
+          return;
+        }
+        
+        try {
+          const response = await fetch('/api/auth/profile', {
+            headers: {
+              'Authorization': `Bearer ${authToken}`,
+            },
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.user) {
+              console.log('🔐 [VAULT] Profile from DB:', data.user.firstName, data.user.lastName);
+              setUserName(data.user.firstName);
+              setUserLastName(data.user.lastName || '');
+              return;
+            }
+          }
+        } catch (e) {
+          console.error('🔐 [VAULT] Failed to fetch profile from API:', e);
+        }
+        
+        // Fallback to session data
+        setUserName(session.firstName);
+        setUserLastName(session.lastName || '');
+      };
+      
+      fetchProfile();
+      
+      console.log('🔐 [AUTH DEBUG] ==================');
+      
+      // ✅ CRITICAL: Load profile image using LOWERCASE email for consistency
+      const normalizedEmail = finalEmail.toLowerCase();
+      let savedImage = localStorage.getItem(`profile_image_${normalizedEmail}`);
+      
+      // Fallback: try session email casing (for backwards compatibility)
+      if (!savedImage && session.userEmail !== normalizedEmail) {
+        savedImage = localStorage.getItem(`profile_image_${session.userEmail}`);
+        if (savedImage) {
+          // Migrate to normalized key
+          localStorage.setItem(`profile_image_${normalizedEmail}`, savedImage);
+          localStorage.removeItem(`profile_image_${session.userEmail}`);
+          console.log('🔄 [VAULT] Migrated profile image to normalized email key');
+        }
+      }
+      
       if (savedImage) {
         setProfileImage(savedImage);
       }
@@ -183,17 +261,42 @@ export default function VaultPage() {
     };
     
     // Also check for changes via custom event (for same-tab updates)
-    const handleProfileUpdate = () => {
+    const handleProfileImageUpdate = () => {
       const savedImage = localStorage.getItem(`profile_image_${userEmail}`);
       setProfileImage(savedImage);
     };
     
+    // ✅ FIX: Also listen for name changes from settings
+    const handleProfileUpdate = () => {
+      const savedImage = localStorage.getItem(`profile_image_${userEmail}`);
+      setProfileImage(savedImage);
+      
+      // Re-read session/user data for updated name
+      const session = getSession();
+      const storedUser = localStorage.getItem('user');
+      
+      if (storedUser) {
+        try {
+          const user = JSON.parse(storedUser);
+          if (user.firstName) setUserName(user.firstName);
+          if (user.lastName !== undefined) setUserLastName(user.lastName || '');
+        } catch (e) {
+          console.error('Failed to parse stored user:', e);
+        }
+      } else if (session) {
+        setUserName(session.firstName);
+        setUserLastName(session.lastName || '');
+      }
+    };
+    
     window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('profileImageUpdated', handleProfileUpdate);
+    window.addEventListener('profileImageUpdated', handleProfileImageUpdate);
+    window.addEventListener('profileUpdated', handleProfileUpdate);
     
     return () => {
       window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('profileImageUpdated', handleProfileUpdate);
+      window.removeEventListener('profileImageUpdated', handleProfileImageUpdate);
+      window.removeEventListener('profileUpdated', handleProfileUpdate);
     };
   }, [userEmail]);
 
@@ -340,9 +443,17 @@ export default function VaultPage() {
     setSelectedFiles(newSelected);
   };
 
-  const openShareModal = (id: string) => {
+  const openShareModal = async (id: string) => {
     setShareTargetId(id);
+    setCurrentShareRecipients([]);
     setShareModalOpen(true);
+    // Fetch recipients asynchronously
+    try {
+      const recipients = await sharedFilesManager.getShareRecipientsAsync(id);
+      setCurrentShareRecipients(recipients);
+    } catch (e) {
+      console.error('Failed to fetch share recipients:', e);
+    }
   };
 
   const openFolderModal = () => {
@@ -645,9 +756,9 @@ export default function VaultPage() {
               {sidebarWidth > 305 && (
                 <div className="flex items-center justify-between flex-1">
                   <span className="text-lg font-medium">Rubbish bin</span>
-                  {deletedFiles.length > 0 && (
+                  {getVisibleTrashCount() > 0 && (
                     <span className="bg-slate-700/50 px-2.5 py-0.5 rounded text-sm text-gray-300">
-                      {deletedFiles.length}
+                      {getVisibleTrashCount()}
                     </span>
                   )}
                 </div>
@@ -729,7 +840,8 @@ export default function VaultPage() {
              'Recycle Bin'}
           </h2>
 
-          {currentTab === 'vault' && (
+          {/* Show upload menu in vault, or when inside a shared folder */}
+          {(currentTab === 'vault' || (currentTab === 'shared' && currentFolderId)) && (
             <div className="absolute right-8 top-1/2 -translate-y-1/2">
               <VaultUploadMenu
                 showUploadMenu={showUploadMenu}
@@ -760,11 +872,12 @@ export default function VaultPage() {
                'Recycle Bin'}
             </button>
 
-            {currentFolderId && (currentTab === 'vault' || currentTab === 'favorites') && (() => {
+            {currentFolderId && (() => {
               const segments: { id: string; name: string }[] = [];
               let id: string | null = currentFolderId;
               
-              const fileArray = currentTab === 'vault' || currentTab === 'favorites' ? files : deletedFiles;
+              // Use appropriate file array based on tab
+              const fileArray = currentTab === 'trash' ? deletedFiles : files;
 
               while (id) {
                 const f = fileArray.find((x) => x.id === id && x.type === 'folder');
@@ -1197,6 +1310,9 @@ export default function VaultPage() {
               sortOrder={sortOrder}
               onSortChange={handleSortChange}
               allFiles={currentTab === 'trash' ? deletedFiles : files}
+              currentUserEmail={userEmail}
+              currentUserName={userName}
+              currentUserProfileImage={profileImage}
             />
           )}
         </div>
@@ -1493,12 +1609,14 @@ export default function VaultPage() {
         onClose={() => {
           setShareModalOpen(false);
           setShareTargetId(null);
+          setCurrentShareRecipients([]);
         }}
         currentUserName={userName}
         currentUserEmail={userEmail}
+        currentUserProfileImage={profileImage}
         fileName={shareTargetId ? files.find(f => f.id === shareTargetId)?.name || '' : ''}
         fileId={shareTargetId}
-        currentSharedWith={shareTargetId ? sharedFilesManager.getShareRecipients(shareTargetId) : []}
+        currentSharedWith={currentShareRecipients}
         onShare={(recipientEmail) => {
           if (!shareTargetId) return false;
           return handleShareFile(shareTargetId, recipientEmail, userName);
@@ -1507,6 +1625,10 @@ export default function VaultPage() {
           if (!shareTargetId) return false;
           try {
             const ok = await sharedFilesManager.unshareFile(shareTargetId, recipientEmail);
+            if (ok) {
+              // Update local state immediately
+              setCurrentShareRecipients(prev => prev.filter(e => e !== recipientEmail));
+            }
             // Trigger a sync so UI updates immediately
             sharedFilesManager.triggerSync();
             return ok;

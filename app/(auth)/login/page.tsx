@@ -1,3 +1,6 @@
+// FILE LOCATION: app/login/page.tsx
+// UPDATED to use PostgreSQL backend API
+
 "use client";
 
 import { useRef, useState, useEffect } from "react";
@@ -19,9 +22,7 @@ export default function LoginPage() {
 
   const [emailError, setEmailError] = useState(false);
   const [passwordError, setPasswordError] = useState(false);
-
-  // ❌ REMOVED: The code that was clearing localStorage and destroying vault data!
-  // The old code would wipe out ALL vault files on page load
+  const [isLoading, setIsLoading] = useState(false);
 
   // Load saved email if remember me was checked
   useEffect(() => {
@@ -36,7 +37,7 @@ export default function LoginPage() {
     }
   }, []);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     const email = emailRef.current?.value ?? "";
     const password = passwordRef.current?.value ?? "";
     const rememberMe = rememberRef.current?.checked ?? false;
@@ -46,51 +47,77 @@ export default function LoginPage() {
 
     if (!email || !password) return;
 
-    // Get stored account info
-    const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
-    const account = accounts.find((acc: any) => acc.email === email);
+    setIsLoading(true);
 
-    if (!account) {
-      alert('Email does not match registered account.');
-      return;
+    try {
+      // ✅ CALL API INSTEAD OF LOCALSTORAGE
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(data.error || 'Login failed');
+        setPasswordError(true);
+        setIsLoading(false);
+        return;
+      }
+
+      // ✅ CRITICAL FIX: Clear ALL old session data before setting new
+      // This prevents cross-user data contamination
+      sessionStorage.clear(); // Clear all sessionStorage
+      localStorage.removeItem('user_session');
+      localStorage.removeItem('session');
+      localStorage.removeItem('user');
+      
+      // ✅ STORE AUTH TOKEN (sessionStorage for per-tab isolation)
+      sessionStorage.setItem('auth_token', data.token);
+      localStorage.setItem('user', JSON.stringify(data.user));
+      
+      // ✅ STORE SALT FOR ENCRYPTION
+      if (data.salt) {
+        const saltUint8 = new Uint8Array(data.salt);
+        const hexSalt = Array.from(saltUint8)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+        localStorage.setItem(`vault_salt_${email}`, hexSalt);
+      }
+
+      // Handle remember me
+      if (rememberMe) {
+        localStorage.setItem('sessionEmail', email);
+        localStorage.setItem('rememberMe', 'true');
+      } else {
+        localStorage.removeItem('sessionEmail');
+        localStorage.removeItem('rememberMe');
+      }
+
+      // Create session
+      createSession(email, data.user.firstName, data.user.lastName, rememberMe);
+
+      console.log('✅ Login successful for:', email);
+
+      // Redirect to vault
+      router.push("/vault");
+
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('An error occurred during login. Please try again.');
+      setIsLoading(false);
     }
-
-    // Verify password matches
-    if (account.password !== password) {
-      alert('Incorrect password.');
-      setPasswordError(true);
-      return;
-    }
-
-    // Handle remember me
-    if (rememberMe) {
-      localStorage.setItem('sessionEmail', email);
-      localStorage.setItem('rememberMe', 'true');
-    } else {
-      localStorage.removeItem('sessionEmail');
-      localStorage.removeItem('rememberMe');
-    }
-
-    // Create session with remember me flag
-    createSession(email, account.firstName, account.lastName, rememberMe);
-
-    console.log('✅ Login successful for:', email);
-    console.log('📁 Vault data preserved');
-
-    // Redirect to vault
-    router.push("/vault");
   };
 
   return (
     <div className="h-screen bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      {/* Header with perfect fade */}
       <header className="flex justify-between items-center px-12 py-8">
         <div 
           onClick={() => router.push('/start')} 
           className="flex items-center gap-3 cursor-pointer"
         >
-          {/* Temporary Logo - Replace with actual logo later */}
-          <div className="text-3xl">🔐</div>
+          <div className="text-3xl">🔒</div>
           <span className="text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
@@ -111,7 +138,6 @@ export default function LoginPage() {
               Log in
             </h1>
 
-            {/* Inputs */}
             <div className="flex flex-col gap-8">
               <AuthInput
                 label="Your email address"
@@ -119,7 +145,6 @@ export default function LoginPage() {
                 error={emailError}
               />
 
-              {/* Password WITHOUT extra bottom spacing */}
               <PasswordInput
                 label="Password"
                 inputRef={passwordRef as React.RefObject<HTMLInputElement>}
@@ -127,7 +152,6 @@ export default function LoginPage() {
               />
             </div>
 
-            {/* Forgot password — snug to password field */}
             <div className="flex justify-end text-sm text-neutral-400 mt-4">
               <span 
                 onClick={() => router.push('/forgot-password')} 
@@ -137,10 +161,8 @@ export default function LoginPage() {
               </span>
             </div>
 
-            {/* Push actions to bottom */}
             <div className="flex-grow" />
 
-            {/* Remember me + Login — perfectly aligned */}
             <div className="flex items-center justify-between">
               <label
                 className="
@@ -161,8 +183,8 @@ export default function LoginPage() {
               </label>
 
               <div className="w-[220px]">
-                <AuthButton onClick={handleLogin}>
-                  Log in
+                <AuthButton onClick={handleLogin} disabled={isLoading}>
+                  {isLoading ? 'Logging in...' : 'Log in'}
                 </AuthButton>
               </div>
             </div>

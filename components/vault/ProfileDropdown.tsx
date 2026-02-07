@@ -41,9 +41,25 @@ export default function ProfileDropdown({
     return `${(bytes / 1024).toFixed(0)} KB`;
   };
 
+  // Format email: capitalize first letter only if not a number, lowercase domain
+  const formatEmail = (email: string): string => {
+    if (!email) return '';
+    const [localPart, domain] = email.split('@');
+    if (!localPart || !domain) return email.toLowerCase();
+    
+    // Only capitalize first letter if it's not a number
+    const firstChar = localPart.charAt(0);
+    const isNumber = /\d/.test(firstChar);
+    const formattedLocal = isNumber 
+      ? localPart.toLowerCase()
+      : firstChar.toUpperCase() + localPart.slice(1).toLowerCase();
+    return `${formattedLocal}@${domain.toLowerCase()}`;
+  };
+
   const storagePercent = (storageUsed / storageTotal) * 100;
   const fullName = userLastName ? `${userName || ''} ${userLastName}` : (userName || 'User');
   const userInitial = (userName && userName.length > 0) ? userName.charAt(0).toUpperCase() : 'U';
+  const formattedEmail = formatEmail(userEmail);
 
   const handleRecoveryKeyClick = () => {
     console.log('🔑 Recovery key clicked!');
@@ -111,7 +127,7 @@ export default function ProfileDropdown({
             )}
             <div className="flex-1 min-w-0">
               <p className="text-base text-white font-semibold truncate">{fullName}</p>
-              <p className="text-xs text-gray-400 truncate">{userEmail}</p>
+              <p className="text-xs text-gray-400 truncate">{formattedEmail}</p>
             </div>
           </div>
         </div>

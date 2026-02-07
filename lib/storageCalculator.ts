@@ -1,8 +1,6 @@
 // lib/storageCalculator.ts
 // CORRECTED: Storage calculation that INCLUDES received shares on receiver side
 
-import { sharedFilesManager } from './sharedFilesManager';
-
 /**
  * Calculate total storage used by a user
  * INCLUDES:

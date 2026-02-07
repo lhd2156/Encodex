@@ -25,9 +25,11 @@ export function generateRecoveryKey(): string {
  * Called during registration
  */
 export function storeRecoveryKey(userEmail: string, recoveryKey: string): void {
-  const keyStorageKey = `recovery_key_${userEmail}`;
+  // ✅ CRITICAL: Always use lowercase email for storage key
+  const normalizedEmail = userEmail.toLowerCase();
+  const keyStorageKey = `recovery_key_${normalizedEmail}`;
   localStorage.setItem(keyStorageKey, recoveryKey);
-  console.log('💾 Stored recovery key for:', userEmail);
+  console.log('💾 Stored recovery key for:', normalizedEmail);
 }
 
 /**
@@ -35,8 +37,27 @@ export function storeRecoveryKey(userEmail: string, recoveryKey: string): void {
  * Returns null if no key exists
  */
 export function getRecoveryKey(userEmail: string): string | null {
-  const keyStorageKey = `recovery_key_${userEmail}`;
-  return localStorage.getItem(keyStorageKey);
+  // ✅ CRITICAL: Always use lowercase email for lookup
+  const normalizedEmail = userEmail.toLowerCase();
+  const keyStorageKey = `recovery_key_${normalizedEmail}`;
+  
+  // Try normalized key first
+  let key = localStorage.getItem(keyStorageKey);
+  
+  // Fallback: try original casing (for backwards compatibility)
+  if (!key) {
+    const originalKey = `recovery_key_${userEmail}`;
+    key = localStorage.getItem(originalKey);
+    
+    // If found with original casing, migrate to normalized
+    if (key) {
+      localStorage.setItem(keyStorageKey, key);
+      localStorage.removeItem(originalKey);
+      console.log('🔄 Migrated recovery key to normalized email:', normalizedEmail);
+    }
+  }
+  
+  return key;
 }
 
 /**
