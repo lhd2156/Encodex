@@ -28,7 +28,7 @@ export default function AuthInput({
           ${
             error
               ? "border-red-500"
-              : "border-neutral-600 focus:border-emerald-400"
+              : "border-neutral-600 focus:border-orange-400"
           }
         `}
       />

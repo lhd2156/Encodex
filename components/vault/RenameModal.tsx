@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useEffect } from 'react';
+import Image from 'next/image';
 
 interface RenameModalProps {
   isOpen: boolean;
@@ -71,8 +72,13 @@ export default function RenameModal({
           {/* Content */}
           <div className="p-6">
             <div className="flex items-center gap-3 bg-gray-800/50 rounded-lg px-4 py-3 mb-6">
-              <span className="text-2xl">
-                {itemType === 'folder' ? '📁' : '📄'}
+              <span>
+                <Image 
+                  src={itemType === 'folder' ? '/encodex-folder.svg' : '/encodex-file.svg'} 
+                  alt={itemType === 'folder' ? 'Folder' : 'File'} 
+                  width={28} 
+                  height={28} 
+                />
               </span>
               <input
                 ref={inputRef}

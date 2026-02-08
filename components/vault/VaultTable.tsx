@@ -1,6 +1,39 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
+
+// Helper function to get file icon based on file extension
+const getFileIcon = (fileName: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  
+  // Images
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
+    return '/encodex-image.svg';
+  }
+  // Videos
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'].includes(ext)) {
+    return '/encodex-video.svg';
+  }
+  // Audio
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'wma'].includes(ext)) {
+    return '/encodex-audio.svg';
+  }
+  // Spreadsheets
+  if (['xls', 'xlsx', 'csv', 'ods', 'tsv'].includes(ext)) {
+    return '/encodex-spreadsheet.svg';
+  }
+  // Code
+  if (['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'md', 'sql'].includes(ext)) {
+    return '/encodex-code.svg';
+  }
+  // PDF
+  if (ext === 'pdf') {
+    return '/encodex-pdf.svg';
+  }
+  // Default file
+  return '/encodex-file.svg';
+};
 
 interface FileItem {
   id: string;
@@ -10,6 +43,10 @@ interface FileItem {
   createdAt: Date;
   parentFolderId?: string | null;
   isFavorite?: boolean;
+  owner?: string;
+  ownerName?: string;
+  uploaderName?: string; // Live display name of uploader (when different from owner)
+  isReceivedShare?: boolean;
 }
 
 interface VaultTableProps {
@@ -45,6 +82,9 @@ interface VaultTableProps {
   sortOrder: 'asc' | 'desc' | null;
   onSortChange: (column: 'name' | 'modified') => void;
   allFiles?: FileItem[];
+  currentUserEmail?: string;  // Current user's email for owner display
+  currentUserName?: string;   // Current user's name for owner display
+  currentUserProfileImage?: string | null; // Current user's profile image
 }
 
 export default function VaultTable({
@@ -80,6 +120,9 @@ export default function VaultTable({
   sortOrder,
   onSortChange,
   allFiles,
+  currentUserEmail,
+  currentUserName,
+  currentUserProfileImage,
 }: VaultTableProps) {
   const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
   const [dragOverId, setDragOverId] = React.useState<string | null>(null);
@@ -134,7 +177,7 @@ export default function VaultTable({
       return null;
     }
     return (
-      <span className="ml-1 text-teal-400">
+      <span className="ml-1 text-orange-400">
         {sortOrder === 'asc' ? '▲' : '▼'}
       </span>
     );
@@ -154,7 +197,7 @@ export default function VaultTable({
           {/* Name - Sortable */}
           <button
             onClick={() => onSortChange('name')}
-            className="col-span-3 flex items-center hover:text-white transition-colors text-left"
+            className="col-span-3 flex items-center hover:text-white transition-colors text-left pl-[52px]"
           >
             Name
             <SortIcon column="name" />
@@ -188,8 +231,8 @@ export default function VaultTable({
               key={item.id}
               data-file-id={item.id}
               className={`grid grid-cols-12 gap-4 px-6 border-b border-blue-700/20 hover:bg-blue-800/30 transition-all group items-center h-[68px] ${
-                isDragOver && canDropHere ? 'bg-teal-500/20 ring-2 ring-teal-400 shadow-lg' : ''
-              } ${selectedFiles.has(item.id) ? 'bg-blue-800/30' : ''}`}
+                isDragOver && canDropHere ? 'bg-orange-500/20 ring-2 ring-orange-400 shadow-lg' : ''
+              } ${selectedFiles.has(item.id) ? 'bg-orange-500/20' : ''}`}
               draggable={currentTab === 'vault'}
               onDragStart={(e) => {
                 onDragStart(item.id);
@@ -204,38 +247,31 @@ export default function VaultTable({
                   setDragOverId(item.id);
                 }
               }}
-              onDragEnter={(e) => {
-                if (canDropHere) {
-                  e.preventDefault();
-                  setDragOverId(item.id);
-                }
-              }}
               onDragLeave={(e) => {
-                const rect = e.currentTarget.getBoundingClientRect();
-                const x = e.clientX;
-                const y = e.clientY;
-                
-                if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
-                  if (dragOverId === item.id) {
+                if (canDropHere) {
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  const x = e.clientX;
+                  const y = e.clientY;
+
+                  if (
+                    x < rect.left ||
+                    x >= rect.right ||
+                    y < rect.top ||
+                    y >= rect.bottom
+                  ) {
                     setDragOverId(null);
                   }
                 }
               }}
               onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setDragOverId(null);
-                
                 if (canDropHere) {
+                  e.preventDefault();
+                  e.stopPropagation();
                   onDrop(e, item.id);
+                  setDragOverId(null);
                 }
               }}
-              onDragEnd={() => {
-                setDragOverId(null);
-              }}
-              onContextMenu={(e) => onContextMenu(e, item.id)}
               onClick={(e) => {
-                // Single click anywhere (except name or buttons) selects the file
                 const target = e.target as HTMLElement;
                 
                 // Check if click was on checkbox, buttons, or name
@@ -264,21 +300,22 @@ export default function VaultTable({
                 }
               }}
             >
+              {/* Checkbox Area */}
               <div className="col-span-1 flex items-center justify-center h-full">
                 <input
                   type="checkbox"
                   checked={selectedFiles.has(item.id)}
                   onChange={() => onSelectFile(item.id)}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-4 h-4 rounded border-gray-500 text-teal-400 cursor-pointer"
+                  className="w-4 h-4 rounded border-gray-500 text-orange-400 cursor-pointer flex-shrink-0"
                 />
               </div>
 
-              {/* Name with HEART for favorites */}
-              <div className="col-span-3 flex items-center gap-3 min-w-0 max-w-full overflow-hidden h-full">
+              {/* Name with Paperclip + Icon + HEART for favorites */}
+              <div className="col-span-3 flex items-center min-w-0 max-w-full overflow-hidden h-full">
                 <div
                   data-name-click-area
-                  className="flex items-center gap-3 w-full cursor-pointer min-w-0 overflow-hidden"
+                  className="flex items-center w-full cursor-pointer min-w-0 overflow-hidden"
                   onClick={(e) => {
                     e.stopPropagation();
                     if (item.type === 'folder') {
@@ -288,13 +325,34 @@ export default function VaultTable({
                     }
                   }}
                 >
-                  <span className="text-2xl flex-shrink-0 leading-none">
-                    {item.type === 'folder' 
-                      ? '📁' 
-                      : item.name.toLowerCase().endsWith('.pdf')
-                        ? '📄'
-                        : '📄'}
+                  {/* Paperclip indicator - show for ALL shared items */}
+                  <span className="flex-shrink-0 w-[20px] flex items-center justify-center leading-none">
+                    {((item as any).isReceivedShare || 
+                      (item as any).isSharedFile || 
+                      (item as any).sharedMeta ||
+                      (item as any).sharedWith?.length > 0) && (
+                      <span 
+                        title={
+                          (item as any).isReceivedShare || (item as any).isSharedFile || (item as any).sharedMeta
+                            ? `Shared by ${(item as any).sharedMeta?.ownerId || (item as any).ownerName || (item as any).owner || 'someone'}`
+                            : `Shared with: ${(item as any).sharedWith?.join(', ')}`
+                        }
+                      >
+                        <Image src="/encodex-paperclip.svg" alt="Shared" width={14} height={14} className="opacity-70" />
+                      </span>
+                    )}
                   </span>
+                  {/* File icon: ALWAYS 32px wide */}
+                  <span className="flex-shrink-0 w-[32px] flex items-center justify-center leading-none">
+                    <Image 
+                      src={item.type === 'folder' ? '/encodex-folder.svg' : getFileIcon(item.name)} 
+                      alt={item.type === 'folder' ? 'Folder' : 'File'} 
+                      width={28} 
+                      height={28} 
+                    />
+                  </span>
+                  {/* 12px fixed spacer between icon and text */}
+                  <span className="flex-shrink-0 w-[12px]" />
                   <div className="flex-1 min-w-0 overflow-hidden">
                     <span className="text-sm text-white font-medium block truncate leading-tight hover:underline">
                       {item.name}
@@ -302,18 +360,83 @@ export default function VaultTable({
                   </div>
                   {/* Heart icon shows for ALL favorited items regardless of tab */}
                   {item.isFavorite && (
-                    <span className="text-base flex-shrink-0 leading-none">❤️</span>
+                    <span className="flex-shrink-0 leading-none ml-2">
+                      <Image src="/encodex-heart-filled.svg" alt="Favorite" width={18} height={18} />
+                    </span>
                   )}
                 </div>
               </div>
 
-              {/* Owner */}
+              {/* Owner display with uploader info for shared folders */}
               <div className="col-span-2 flex items-center min-w-0 h-full">
                 <div className="flex items-center gap-2 min-w-0">
-                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                  </svg>
-                  <span className="text-xs text-gray-400 truncate leading-tight">me</span>
+                  {(() => {
+                    // Always show user icon, never profile pic in owner column
+                    return (
+                      <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                      </svg>
+                    );
+                  })()}
+                  <span className="text-xs text-gray-400 truncate leading-tight">
+                    {(() => {
+                      const itemOwner = (item as any).owner || (item as any).ownerEmail;
+                      const uploaderEmail = (item as any).ownerName; // ownerName stores uploader's EMAIL when different from owner
+                      const uploaderName = (item as any).uploaderName; // Live display name of uploader
+                      const sharedMeta = (item as any).sharedMeta; // For trash tombstones of shared items
+                      
+                      // RULE 0 (TRASH): If it has sharedMeta, it's a trashed received share - show original owner
+                      if (sharedMeta && sharedMeta.ownerId) {
+                        // This is a trashed shared item - show who shared it
+                        if (currentUserEmail && sharedMeta.ownerId.toLowerCase() === currentUserEmail.toLowerCase()) {
+                          return 'me'; // I was the original owner
+                        }
+                        if (sharedMeta.ownerName && sharedMeta.ownerName !== sharedMeta.ownerId) {
+                          return sharedMeta.ownerName;
+                        }
+                        return sharedMeta.ownerId;
+                      }
+                      
+                      // RULE 1: If it's a received share, show who shared it (the folder owner)
+                      if ((item as any).isReceivedShare) {
+                        // Check if I uploaded this to someone else's shared folder
+                        // Only treat uploaderEmail as real if it looks like an email (contains @)
+                        const isActualUploaderEmail = uploaderEmail && uploaderEmail.includes('@');
+                        if (isActualUploaderEmail && currentUserEmail && uploaderEmail.toLowerCase() === currentUserEmail.toLowerCase()) {
+                          return 'me'; // I uploaded it, show "me"
+                        }
+                        // Show sender's live name (sharedByName comes from User table join)
+                        const sharerName = (item as any).sharedByName;
+                        if (sharerName) {
+                          return sharerName;
+                        }
+                        return (item as any).sharedBy || itemOwner || 'Unknown';
+                      }
+                      
+                      // RULE 2: It's MY file (I own it) - but check if someone else uploaded it
+                      if (itemOwner && currentUserEmail && itemOwner.toLowerCase() === currentUserEmail.toLowerCase()) {
+                        // I own this file - but did someone else upload it to my shared folder?
+                        // Only treat uploaderEmail as a real uploader if it looks like an email (contains @)
+                        // If ownerName doesn't contain @, it's the owner's display name, not an uploader's email
+                        const isActualUploaderEmail = uploaderEmail && uploaderEmail.includes('@');
+                        if (isActualUploaderEmail && uploaderEmail.toLowerCase() !== currentUserEmail.toLowerCase()) {
+                          // Someone else uploaded to my shared folder - show their LIVE name if available
+                          if (uploaderName) {
+                            return uploaderName;
+                          }
+                          return uploaderEmail; // Fallback to email
+                        }
+                        return 'me'; // I uploaded it myself
+                      }
+                      
+                      // RULE 3 (FALLBACK): Owner doesn't match current user
+                      if (itemOwner && currentUserEmail && itemOwner.toLowerCase() !== currentUserEmail.toLowerCase()) {
+                        return itemOwner;
+                      }
+                      
+                      return 'me';
+                    })()}
+                  </span>
                 </div>
               </div>
               
@@ -324,7 +447,9 @@ export default function VaultTable({
               
               {/* Location */}
               <div className="col-span-2 flex items-center gap-2 text-gray-400 text-sm min-w-0 h-full">
-                <span className="text-base flex-shrink-0 leading-none">{currentTab === 'trash' ? '🗑️' : '📁'}</span>
+                <span className="flex-shrink-0 leading-none">
+                  <Image src={currentTab === 'trash' ? '/encodex-trash.svg' : '/encodex-folder.svg'} alt="Location" width={18} height={18} />
+                </span>
                 <span className="truncate leading-tight">
                   {getLocationPath(item, allFiles || files)}
                 </span>
@@ -338,58 +463,61 @@ export default function VaultTable({
               {/* ACTION BUTTONS */}
               <div className="col-span-1 flex items-center justify-end h-full">
                 {(currentTab === 'vault' || currentTab === 'favorites' || currentTab === 'shared' || currentTab === 'recent') && (
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {/* Share */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Share - hidden on smaller screens */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         onShareFile?.(item.id);
                       }}
-                      className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
+                      className="hidden xl:block p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title="Share"
                     >
-                      <span className="text-base leading-none">👥</span>
+                      <Image src="/encodex-users.svg" alt="Share" width={22} height={22} />
                     </button>
 
-                    {/* Download */}
+                    {/* Download - hidden on smaller screens */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         onDownloadFile?.(item.id);
                       }}
-                      className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
+                      className="hidden xl:block p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title={item.type === 'folder' ? 'Download as ZIP' : 'Download'}
                     >
-                      <span className="text-base leading-none">⬇️</span>
+                      <Image src="/encodex-download.svg" alt="Download" width={22} height={22} />
                     </button>
 
-                    {/* Rename */}
+                    {/* Rename - hidden on smaller screens */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         onRenameStart(item.id, item.name);
                       }}
-                      className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
+                      className="hidden xl:block p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title="Rename"
                     >
-                      <span className="text-base leading-none">✏️</span>
+                      <Image src="/encodex-edit.svg" alt="Rename" width={22} height={22} />
                     </button>
 
-                    {/* Favorite - HEART ICONS */}
+                    {/* Favorite - hidden on smaller screens */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         onToggleFavorite?.(item.id);
                       }}
-                      className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
+                      className="hidden xl:block p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title={item.isFavorite ? "Remove from favorites" : "Add to favorites"}
                     >
-                      <span className="text-base leading-none">
-                        {item.isFavorite ? '❤️' : '🤍'}
-                      </span>
+                      <Image 
+                        src={item.isFavorite ? '/encodex-heart-filled.svg' : '/encodex-heart-outline.svg'} 
+                        alt={item.isFavorite ? "Remove from favorites" : "Add to favorites"} 
+                        width={22} 
+                        height={22} 
+                      />
                     </button>
 
-                    {/* Three-dot Menu */}
+                    {/* Three-dot Menu - always visible */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -399,7 +527,11 @@ export default function VaultTable({
                       className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors text-gray-400 hover:text-white"
                       title="More actions"
                     >
-                      <span className="leading-none">⋮</span>
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                        <circle cx="12" cy="5" r="2"/>
+                        <circle cx="12" cy="12" r="2"/>
+                        <circle cx="12" cy="19" r="2"/>
+                      </svg>
                     </button>
                   </div>
                 )}
@@ -415,7 +547,7 @@ export default function VaultTable({
                       className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title="Restore"
                     >
-                      <span className="text-base leading-none">↩️</span>
+                      <Image src="/encodex-restore.svg" alt="Restore" width={18} height={18} />
                     </button>
 
                     {/* Delete Permanently */}
@@ -427,7 +559,7 @@ export default function VaultTable({
                       className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                       title="Delete permanently"
                     >
-                      <span className="text-base leading-none">❌</span>
+                      <Image src="/encodex-close.svg" alt="Delete" width={18} height={18} />
                     </button>
                   </div>
                 )}

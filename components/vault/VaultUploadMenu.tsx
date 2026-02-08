@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useEffect } from 'react';
+import Image from 'next/image';
 
 interface VaultUploadMenuProps {
   showUploadMenu: boolean;
@@ -54,17 +55,17 @@ export default function VaultUploadMenu({
       {/* New Folder Button */}
       <button
         onClick={onCreateFolder}
-        className="px-4 py-2 rounded-lg bg-blue-800/40 hover:bg-blue-800/60 text-white text-sm font-semibold transition-colors"
+        className="px-4 py-2 rounded-lg bg-blue-800/40 hover:bg-blue-800/60 text-white text-sm font-semibold transition-colors flex items-center gap-2"
       >
-        ➕ New folder
+        <Image src="/encodex-plus.svg" alt="New" width={20} height={20} className="brightness-0 invert" /> New folder
       </button>
 
       {/* Upload Button */}
       <button
         onClick={() => setShowUploadMenu(!showUploadMenu)}
-        className="px-4 py-2 rounded-lg bg-teal-500/90 hover:bg-teal-500 text-white text-sm font-semibold flex items-center gap-2 transition-colors"
+        className="px-4 py-2 rounded-lg bg-orange-500/90 hover:bg-orange-500 text-white text-sm font-semibold flex items-center gap-2 transition-colors"
       >
-        ⬆️ Upload
+        <Image src="/encodex-upload.svg" alt="Upload" width={20} height={20} className="brightness-0 invert" /> Upload
         <span className="text-xs">{showUploadMenu ? '▲' : '▼'}</span>
       </button>
 
@@ -81,7 +82,7 @@ export default function VaultUploadMenu({
             }}
             className="w-full text-left px-4 py-3 hover:bg-blue-800 text-sm text-white transition-colors flex items-center gap-2"
           >
-            <span>📄</span>
+            <Image src="/encodex-file.svg" alt="File" width={18} height={18} />
             <span>Upload file</span>
           </button>
 
@@ -92,7 +93,7 @@ export default function VaultUploadMenu({
             }}
             className="w-full text-left px-4 py-3 hover:bg-blue-800 text-sm text-white transition-colors border-t border-blue-700/30 flex items-center gap-2"
           >
-            <span>📁</span>
+            <Image src="/encodex-folder.svg" alt="Folder" width={18} height={18} />
             <span>Upload folder</span>
           </button>
         </div>

@@ -1,26 +1,143 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "postgresql" // or "mysql" or "sqlite" - change to match your database
   url      = env("DATABASE_URL")
 }
 
-model File {
-  id           String   @id @default(uuid())
-  ownerId      String
+// ============================================
+// MAIN MODELS
+// ============================================
 
-  filename     String
-  mimeType     String
-  size         Int
-
-  encryptedKey Bytes
-  iv           Bytes
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  firstName    String
+  lastName     String
+  passwordHash String
   salt         Bytes
-
-  storagePath  String
   createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  // Relations
+  files        File[]
+  
+  @@map("users")
+}
 
-  @@index([ownerId])
+model File {
+  id              String    @id @default(cuid())
+  userId          String    // Owner's user ID
+  ownerEmail      String    // Owner's email (for querying)
+  ownerName       String?   // Display name of who uploaded (for shared folder uploads)
+  name            String
+  size            BigInt
+  type            String?   // 'file' or 'folder'
+  mimeType        String?
+  encryptedData   Bytes
+  iv              Bytes
+  wrappedKey      Bytes
+  parentFolderId  String?
+  isFolder        Boolean   @default(false)
+  isFavorite      Boolean   @default(false)
+  isDeleted       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+  deletedBy       String?
+  
+  // Relations
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent          File?     @relation("FileHierarchy", fields: [parentFolderId], references: [id], onDelete: Cascade)
+  children        File[]    @relation("FileHierarchy")
+  shares          Share[]
+  
+  @@index([userId])
+  @@index([ownerEmail])
+  @@index([parentFolderId])
+  @@index([isDeleted])
+  @@map("files")
+}
+
+model Share {
+  id              String    @id @default(cuid())
+  fileId          String
+  fileName        String
+  fileSize        BigInt?
+  fileType        String?
+  recipientEmail  String
+  recipientName   String?
+  parentFolderId  String?
+  sharedAt        DateTime  @default(now())
+  permissions     String?   @default("view") // 'view', 'edit', etc.
+  
+  // Relations
+  file            File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([recipientEmail])
+  @@index([fileId])
+  @@map("shares")
+}
+
+// ============================================
+// METADATA MODELS (Your existing tables)
+// ============================================
+
+// Table: Files that users have permanently hidden from their shared view
+model HiddenShare {
+  id             String   @id @default(cuid())
+  shareId        String   // The share ID
+  fileId         String   // The file ID that was shared
+  recipientEmail String   // Who hid it
+  hiddenAt       DateTime @default(now())
+  
+  @@unique([fileId, recipientEmail]) // One hide record per file per user
+  @@index([recipientEmail]) // Fast lookups by recipient
+  @@map("hidden_shares")
+}
+
+// Table: Files that RECEIVERS have moved to their trash (share still exists)
+model ReceiverTrashedShare {
+  id             String    @id @default(cuid())
+  shareId        String    // The share ID
+  fileId         String    // The file ID
+  recipientEmail String    // Who trashed it
+  trashedAt      DateTime  @default(now())
+  isDeleted      Boolean   @default(false) // False = in trash, True = permanently deleted
+  
+  @@unique([fileId, recipientEmail]) // One trash record per file per recipient
+  @@index([recipientEmail])
+  @@map("receiver_trashed_shares")
+}
+
+// Table: Files that SENDERS have moved to trash (temp hidden from receivers)
+model TempDeletedShare {
+  id                String   @id @default(cuid())
+  fileId            String   // The file ID
+  recipientEmail    String   // Which recipient this affects
+  deletedByOwnerAt  DateTime @default(now()) // When owner trashed it
+  
+  @@unique([fileId, recipientEmail]) // One record per file per recipient
+  @@index([recipientEmail])
+  @@index([fileId])
+  @@map("temp_deleted_shares")
+}
+
+// Table: User-specific favorites (for both owned files and received shares)
+// This ensures favorites are PER-USER, not shared between sender/receiver
+model UserFavorite {
+  id        String   @id @default(cuid())
+  fileId    String   // The file ID
+  userEmail String   // Who favorited it
+  createdAt DateTime @default(now())
+  
+  @@unique([fileId, userEmail]) // One favorite record per file per user
+  @@index([userEmail])
+  @@index([fileId])
+  @@map("user_favorites")
 }

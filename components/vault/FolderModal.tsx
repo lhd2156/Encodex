@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useEffect } from 'react';
+import Image from 'next/image';
 
 interface FolderModalProps {
   isOpen: boolean;
@@ -50,7 +51,10 @@ export default function FolderModal({ isOpen, onClose, onSubmit }: FolderModalPr
         <div className="bg-gradient-to-b from-blue-900 to-blue-950 border border-blue-700/50 rounded-lg shadow-2xl max-w-md w-full">
           {/* Header */}
           <div className="border-b border-blue-700/30 px-6 py-4">
-            <h2 className="text-lg font-semibold text-white">📁 New Folder</h2>
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <Image src="/encodex-folder.svg" alt="Folder" width={20} height={20} />
+              New Folder
+            </h2>
           </div>
 
           {/* Content */}
@@ -61,7 +65,7 @@ export default function FolderModal({ isOpen, onClose, onSubmit }: FolderModalPr
               type="text"
               onKeyDown={handleKeyDown}
               placeholder="Enter folder name..."
-              className="w-full px-4 py-2 rounded-lg bg-blue-950/50 border border-blue-700/50 text-white placeholder-gray-500 focus:outline-none focus:border-teal-400 focus:ring-1 focus:ring-teal-400/50 transition-all"
+              className="w-full px-4 py-2 rounded-lg bg-blue-950/50 border border-blue-700/50 text-white placeholder-gray-500 focus:outline-none focus:border-orange-400 focus:ring-1 focus:ring-orange-400/50 transition-all"
             />
           </div>
 
@@ -75,7 +79,7 @@ export default function FolderModal({ isOpen, onClose, onSubmit }: FolderModalPr
             </button>
             <button
               onClick={handleSubmit}
-              className="px-4 py-2 rounded-lg bg-teal-500 hover:bg-teal-600 text-white transition-colors text-sm font-semibold"
+              className="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white transition-colors text-sm font-semibold"
             >
               Create
             </button>

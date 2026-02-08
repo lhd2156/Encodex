@@ -1,6 +1,35 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
+
+// Helper function to get file icon based on file extension
+const getFileIcon = (fileName: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  
+  // Images
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
+    return '/encodex-image.svg';
+  }
+  // Videos
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'].includes(ext)) {
+    return '/encodex-video.svg';
+  }
+  // Audio
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'wma'].includes(ext)) {
+    return '/encodex-audio.svg';
+  }
+  // Spreadsheets
+  if (['xls', 'xlsx', 'csv', 'ods', 'tsv'].includes(ext)) {
+    return '/encodex-spreadsheet.svg';
+  }
+  // Code
+  if (['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'md', 'sql'].includes(ext)) {
+    return '/encodex-code.svg';
+  }
+  // Default file
+  return '/encodex-file.svg';
+};
 
 interface FileItem {
   id: string;
@@ -272,31 +301,50 @@ export default function SearchBar({ files, onSelectFile, onOpenFolder }: SearchB
                     onClick={() => handleClick(file)}
                     className="w-full px-4 py-3 hover:bg-slate-700/50 transition-colors text-left flex items-center gap-3 border-b border-slate-700/30 last:border-b-0"
                   >
-                    <span className="text-2xl flex-shrink-0">
-                      {file.type === 'folder' ? '📁' : '📄'}
+                    <span className="flex-shrink-0">
+                      <Image 
+                        src={file.type === 'folder' ? '/encodex-folder.svg' : getFileIcon(file.name)} 
+                        alt={file.type === 'folder' ? 'Folder' : 'File'}
+                        width={28} 
+                        height={28} 
+                      />
                     </span>
                     
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm text-white font-medium truncate flex items-center gap-2">
+                      <div className="text-sm text-white font-medium truncate">
                         {highlight(file.name, query)}
-                        {(file as any).isReceivedShare && (
-                          <span className="text-sm opacity-80">📎</span>
-                        )}
                       </div>
                       <div className="text-xs text-gray-400 mt-0.5">
                         {file.type === 'folder' ? 'Folder' : 'File'} • Modified {formatDate(file.createdAt)}
                       </div>
                     </div>
                     
-                    {file.isFavorite && (
-                      <span className="text-base flex-shrink-0">❤️</span>
-                    )}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {/* If file is favorited, render favorite at far right and paperclip to its left */}
+                      {file.isFavorite ? (
+                        <>
+                          {(file as any).isReceivedShare || (file as any).sharedWith?.length > 0 ? (
+                            <span title="Shared"><Image src="/encodex-paperclip.svg" alt="Shared" width={16} height={16} /></span>
+                          ) : null}
+                          <span title="Favorite"><Image src="/encodex-heart-filled.svg" alt="Favorite" width={16} height={16} /></span>
+                        </>
+                      ) : (
+                        /* Not favorited: paperclip sits at far right when present */
+                        ((file as any).isReceivedShare || (file as any).sharedWith?.length > 0) && (
+                          <span title="Shared"><Image src="/encodex-paperclip.svg" alt="Shared" width={16} height={16} /></span>
+                        )
+                      )}
+                    </div>
                   </button>
                 ))}
               </>
             ) : (
               <div className="px-4 py-8 text-center">
-                <div className="text-4xl mb-2">🔍</div>
+                <div className="mb-2 flex justify-center">
+                  <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
                 <p className="text-sm text-gray-400 font-medium">No files or folders found</p>
                 <p className="text-xs text-gray-500 mt-1">Try a different search term</p>
               </div>

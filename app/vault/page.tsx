@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import VaultUploadMenu from '@/components/vault/VaultUploadMenu';
@@ -17,8 +18,12 @@ import UploadProgressPopup from '@/components/vault/UploadProgressPopup';
 import SearchBar from '@/components/vault/SearchBar';
 import ProfileDropdown from '@/components/vault/ProfileDropdown';
 import FileViewer from '@/components/pdf/FileViewer';
+import UnlockVaultModal from '@/components/vault/UnlockVaultModal';
 import { fileStorage } from '@/components/pdf/fileStorage';
+import { downloadRecoveryKey } from '@/lib/recoveryKey';
 import { useVault } from '@/hooks/useVault';
+import { useVaultContext } from '@/lib/vault/vault-context';
+import { sharedFilesManager } from '@/lib/sharedFilesManager';
 import { getSession, isSessionValid, clearSession } from '@/lib/session';
 
 const DynamicStorageStats = dynamic(
@@ -35,7 +40,42 @@ interface FileItem {
   parentFolderId?: string | null;
   isFavorite?: boolean;
   sharedBy?: string;
+  owner?: string;
+  ownerName?: string;
+  isReceivedShare?: boolean;
 }
+
+// Helper function to get file icon based on file extension
+const getFileIcon = (fileName: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop() || '';
+  
+  // Images
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) {
+    return '/encodex-image.svg';
+  }
+  // Videos
+  if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'].includes(ext)) {
+    return '/encodex-video.svg';
+  }
+  // Audio
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'wma'].includes(ext)) {
+    return '/encodex-audio.svg';
+  }
+  // Spreadsheets
+  if (['xls', 'xlsx', 'csv', 'ods', 'tsv'].includes(ext)) {
+    return '/encodex-spreadsheet.svg';
+  }
+  // Code
+  if (['js', 'ts', 'jsx', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'md', 'sql'].includes(ext)) {
+    return '/encodex-code.svg';
+  }
+  // PDF
+  if (ext === 'pdf') {
+    return '/encodex-pdf.svg';
+  }
+  // Default file
+  return '/encodex-file.svg';
+};
 
 export default function VaultPage() {
   const router = useRouter();
@@ -45,21 +85,28 @@ export default function VaultPage() {
   const [userName, setUserName] = React.useState('');
   const [userEmail, setUserEmail] = React.useState('');
   const [userLastName, setUserLastName] = React.useState('');
+  const [profileImage, setProfileImage] = React.useState<string | null>(null);
+
+  // Get master key from vault context for encryption
+  const { masterKey, unlocked, unlock } = useVaultContext();
 
   // SIDEBAR STATE
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
-  const [sidebarWidth, setSidebarWidth] = React.useState(600);
+  const [sidebarWidth, setSidebarWidth] = React.useState(350);
   const [isResizing, setIsResizing] = React.useState(false);
   const [showProfileDropdown, setShowProfileDropdown] = React.useState(false);
   const profileRef = React.useRef<HTMLDivElement>(null);
   
+  // RECOVERY KEY MODAL STATE - AT PAGE LEVEL
+  const [showRecoveryKeyModal, setShowRecoveryKeyModal] = React.useState(false);
+  const [recoveryKey, setRecoveryKey] = React.useState('');
+  const [copied, setCopied] = React.useState(false);
+  
   const collapsedWidth = 100;
   const minExpandedWidth = 270;
-  const maxSidebarWidth = 600;
+  const maxSidebarWidth = 450;
 
   // Use the vault hook
-  // FIX 1: Added handleShareFile to the destructuring so we actually get
-  //         the hook's 3-argument share function into scope.
   const {
     files,
     deletedFiles,
@@ -85,19 +132,18 @@ export default function VaultPage() {
     handleRenameFile,
     handleDeleteFile,
     handleRestoreFile,
-    handleRestoreFiles,
     handlePermanentDelete,
     handleMoveToFolder,
     handleDownloadFile,
     handleToggleFavorite,
-    handleShareFile,           // <-- THIS was missing. It's the real share logic.
-    handleUnshareAll,
+    handleShareFile,
     handleBulkDelete,
     handleBulkRestore,
     handleBulkPermanentDelete,
     handleSortChange,
     getSharedFilesCount,
-  } = useVault(userEmail);
+    getVisibleTrashCount,
+  } = useVault(userEmail, userName, masterKey ?? undefined);
 
   const [showUploadMenu, setShowUploadMenu] = React.useState(false);
   const [showFolderModal, setShowFolderModal] = React.useState(false);
@@ -106,12 +152,14 @@ export default function VaultPage() {
   const [confirmTargetId, setConfirmTargetId] = React.useState<string | null>(null);
   const [moveModalOpen, setMoveModalOpen] = React.useState(false);
   const [moveTargetId, setMoveTargetId] = React.useState<string | null>(null);
+  const [bulkMoveTargetIds, setBulkMoveTargetIds] = React.useState<string[]>([]);
   const [renameModalOpen, setRenameModalOpen] = React.useState(false);
   const [renameTargetId, setRenameTargetId] = React.useState<string | null>(null);
   const [renameTargetName, setRenameTargetName] = React.useState('');
   const [completedUploads, setCompletedUploads] = React.useState<string[]>([]);
   const [shareModalOpen, setShareModalOpen] = React.useState(false);
   const [shareTargetId, setShareTargetId] = React.useState<string | null>(null);
+  const [currentShareRecipients, setCurrentShareRecipients] = React.useState<string[]>([]);
   const [viewingFile, setViewingFile] = React.useState<{ 
     url: string; 
     name: string; 
@@ -153,29 +201,158 @@ export default function VaultPage() {
 
     const session = getSession();
     if (session) {
-      setUserName(session.firstName);
-      setUserLastName(session.lastName || '');
-      setUserEmail(session.userEmail);
+      // Auth token is in sessionStorage (tab-specific!)
+      const authToken = sessionStorage.getItem('auth_token');
+      
+      // Use auth token to get email (it's tab-specific, unlike localStorage)
+      let finalEmail = session.userEmail;
+      
+      if (authToken) {
+        // Decode JWT payload to get the correct email for THIS tab
+        try {
+          const payload = JSON.parse(atob(authToken.split('.')[1]));
+          if (payload.email) {
+            finalEmail = payload.email.toLowerCase();
+          }
+        } catch (e) {
+          
+        }
+      }
+      
+      // Set email immediately (from token - accurate)
+      setUserEmail(finalEmail);
+      // Fetch user's ACTUAL name from database (not shared localStorage!)
+      // The auth token is tab-specific, so this gets the correct user's profile
+      const fetchProfile = async () => {
+        if (!authToken) {
+          // Fallback to session data if no token
+          setUserName(session.firstName);
+          setUserLastName(session.lastName || '');
+          return;
+        }
+        
+        try {
+          const response = await fetch('/api/auth/profile', {
+            headers: {
+              'Authorization': `Bearer ${authToken}`,
+            },
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.user) {
+              setUserName(data.user.firstName);
+              setUserLastName(data.user.lastName || '');
+              return;
+            }
+          }
+        } catch (e) {
+          
+        }
+        
+        // Fallback to session data
+        setUserName(session.firstName);
+        setUserLastName(session.lastName || '');
+      };
+      
+      fetchProfile();
+      
+      // Load profile image using LOWERCASE email for consistency
+      const normalizedEmail = finalEmail.toLowerCase();
+      let savedImage = localStorage.getItem(`profile_image_${normalizedEmail}`);
+      
+      // Fallback: try session email casing (for backwards compatibility)
+      if (!savedImage && session.userEmail !== normalizedEmail) {
+        savedImage = localStorage.getItem(`profile_image_${session.userEmail}`);
+        if (savedImage) {
+          // Migrate to normalized key
+          localStorage.setItem(`profile_image_${normalizedEmail}`, savedImage);
+          localStorage.removeItem(`profile_image_${session.userEmail}`);
+          }
+      }
+      
+      if (savedImage) {
+        setProfileImage(savedImage);
+      }
     }
   }, [router]);
 
-  // Clear selection when switching tabs
-  const previousTabRef = React.useRef(currentTab);
+  // Listen for profile image changes (for real-time updates from settings)
   React.useEffect(() => {
-    if (previousTabRef.current !== currentTab) {
-      const newViewFileIds = new Set(displayFiles.map(f => f.id));
-      const updatedSelection = new Set(
-        Array.from(selectedFiles).filter(id => newViewFileIds.has(id))
-      );
-      setSelectedFiles(updatedSelection);
-      previousTabRef.current = currentTab;
+    if (!userEmail) return;
+    
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === `profile_image_${userEmail}`) {
+        setProfileImage(e.newValue);
+      }
+    };
+    
+    // Also check for changes via custom event (for same-tab updates)
+    const handleProfileImageUpdate = () => {
+      const savedImage = localStorage.getItem(`profile_image_${userEmail}`);
+      setProfileImage(savedImage);
+    };
+    
+    // Also listen for name changes from settings
+    const handleProfileUpdate = () => {
+      const savedImage = localStorage.getItem(`profile_image_${userEmail}`);
+      setProfileImage(savedImage);
+      
+      // Re-read session/user data for updated name
+      const session = getSession();
+      const storedUser = localStorage.getItem('user');
+      
+      if (storedUser) {
+        try {
+          const user = JSON.parse(storedUser);
+          if (user.firstName) setUserName(user.firstName);
+          if (user.lastName !== undefined) setUserLastName(user.lastName || '');
+        } catch (e) {
+          
+        }
+      } else if (session) {
+        setUserName(session.firstName);
+        setUserLastName(session.lastName || '');
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('profileImageUpdated', handleProfileImageUpdate);
+    window.addEventListener('profileUpdated', handleProfileUpdate);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('profileImageUpdated', handleProfileImageUpdate);
+      window.removeEventListener('profileUpdated', handleProfileUpdate);
+    };
+  }, [userEmail]);
+
+  // Clear selection when files are no longer visible (tab change, folder navigation, etc.)
+  const displayFileIdsRef = React.useRef<string>('');
+  React.useEffect(() => {
+    const currentFileIdsStr = displayFiles.map(f => f.id).sort().join(',');
+    
+    // Only check selection when the visible file list actually changed
+    if (displayFileIdsRef.current !== currentFileIdsStr) {
+      displayFileIdsRef.current = currentFileIdsStr;
+      
+      if (selectedFiles.size > 0) {
+        const currentFileIds = new Set(displayFiles.map(f => f.id));
+        const updatedSelection = new Set(
+          Array.from(selectedFiles).filter(id => currentFileIds.has(id))
+        );
+        // Only update state if selection actually changed
+        if (updatedSelection.size !== selectedFiles.size) {
+          setSelectedFiles(updatedSelection);
+        }
+      }
     }
-  }, [currentTab, displayFiles, selectedFiles, setSelectedFiles]);
+  }, [displayFiles, selectedFiles, setSelectedFiles]);
 
   // Toggle sidebar collapse/expand
   const toggleSidebar = () => {
     if (sidebarCollapsed) {
-      setSidebarWidth(600);
+      setSidebarWidth(350);
       setSidebarCollapsed(false);
     } else {
       setSidebarWidth(collapsedWidth);
@@ -245,18 +422,26 @@ export default function VaultPage() {
   };
 
   const handleSettings = () => {
-    console.log('Open settings');
+    router.push('/settings');
     setShowProfileDropdown(false);
   };
 
+  // MODIFIED: handleRecoveryKey now shows page-level modal
   const handleRecoveryKey = () => {
-    console.log('Show recovery key');
     setShowProfileDropdown(false);
-  };
-
-  const handle2FA = () => {
-    console.log('Setup 2FA');
-    setShowProfileDropdown(false);
+    
+    // Get existing recovery key from localStorage
+    const keyStorageKey = `recovery_key_${userEmail}`;
+    const key = localStorage.getItem(keyStorageKey) || '';
+    
+    if (!key) {
+      alert('No recovery key found. Recovery keys are generated during account registration.');
+      return;
+    }
+    
+    setRecoveryKey(key);
+    setCopied(false);
+    setShowRecoveryKeyModal(true);
   };
 
   const requestPermanentDelete = (id: string) => {
@@ -266,7 +451,31 @@ export default function VaultPage() {
 
   const startMoveToFolder = (fileId: string) => {
     setMoveTargetId(fileId);
+    setBulkMoveTargetIds([]);
     setMoveModalOpen(true);
+  };
+
+  const startBulkMoveToFolder = () => {
+    const selectedIds = Array.from(selectedFiles);
+    if (selectedIds.length === 0) return;
+    setMoveTargetId(null);
+    setBulkMoveTargetIds(selectedIds);
+    setMoveModalOpen(true);
+  };
+
+  const handleBulkMoveToFolder = async (targetFolderId: string | null) => {
+    const idsToMove = bulkMoveTargetIds.length > 0 ? bulkMoveTargetIds : (moveTargetId ? [moveTargetId] : []);
+    if (idsToMove.length === 0) return;
+    
+    // Move each file sequentially
+    for (const fileId of idsToMove) {
+      await handleMoveToFolder(fileId, targetFolderId);
+    }
+    
+    // Clear selection and state
+    setSelectedFiles(new Set());
+    setBulkMoveTargetIds([]);
+    setMoveTargetId(null);
   };
 
   const startRename = (fileId: string, fileName: string) => {
@@ -293,13 +502,17 @@ export default function VaultPage() {
     setSelectedFiles(newSelected);
   };
 
-  // FIX 2: Renamed from handleShareFile → openShareModal.
-  //         The old name shadowed the hook's handleShareFile, so the modal's
-  //         onShare was calling THIS (which just re-opens the modal and returns
-  //         undefined) instead of the hook's actual share logic.
-  const openShareModal = (id: string) => {
+  const openShareModal = async (id: string) => {
     setShareTargetId(id);
+    setCurrentShareRecipients([]);
     setShareModalOpen(true);
+    // Fetch recipients asynchronously
+    try {
+      const recipients = await sharedFilesManager.getShareRecipientsAsync(id);
+      setCurrentShareRecipients(recipients);
+    } catch (e) {
+      
+    }
   };
 
   const openFolderModal = () => {
@@ -346,7 +559,7 @@ export default function VaultPage() {
         alert('File not found. It may not have been uploaded properly.');
       }
     } catch (error) {
-      console.error('Error opening file:', error);
+      
       alert('Failed to open file. Please try again.');
     }
   };
@@ -422,8 +635,29 @@ export default function VaultPage() {
     return 'My Drive';
   };
 
+  // RECOVERY KEY MODAL HANDLERS
+  const handleCopyRecoveryKey = () => {
+    navigator.clipboard.writeText(recoveryKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadRecoveryKey = () => {
+    downloadRecoveryKey(recoveryKey, userEmail);
+  };
+
+  const closeRecoveryModal = () => {
+    setShowRecoveryKeyModal(false);
+    setCopied(false);
+  };
+
   return (
     <div className="flex h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white overflow-hidden">
+      {/* UNLOCK VAULT MODAL - Show if vault is locked */}
+      {!unlocked && (
+        <UnlockVaultModal onUnlock={unlock} />
+      )}
+      
       {/* SIDEBAR */}
       <div
         className="relative border-r border-slate-700/30 bg-slate-900/50 backdrop-blur-sm flex flex-col transition-all duration-300 ease-out"
@@ -437,10 +671,10 @@ export default function VaultPage() {
           {sidebarWidth > 305 ? (
             <>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center flex-shrink-0">
-                  <span className="text-white font-bold text-lg">E</span>
+                <div className="w-14 h-14 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0 bg-orange-500">
+                  <Image src="/encodex-logo-lock.svg" alt="Encodex" width={38} height={38} />
                 </div>
-                <span className="text-xl font-semibold text-white">Encodex</span>
+                <span className="text-2xl font-bold text-white">Encodex</span>
               </div>
               <button
                 onClick={toggleSidebar}
@@ -454,8 +688,8 @@ export default function VaultPage() {
             </>
           ) : (
             <div className="flex flex-col items-center w-full gap-6 py-2">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-red-500 to-orange-500 flex items-center justify-center">
-                <span className="text-white font-bold text-lg">E</span>
+              <div className="w-14 h-14 rounded-full overflow-hidden flex items-center justify-center bg-orange-500">
+                <Image src="/encodex-logo-lock.svg" alt="Encodex" width={38} height={38} />
               </div>
               <button
                 onClick={toggleSidebar}
@@ -586,9 +820,9 @@ export default function VaultPage() {
               {sidebarWidth > 305 && (
                 <div className="flex items-center justify-between flex-1">
                   <span className="text-lg font-medium">Rubbish bin</span>
-                  {deletedFiles.length > 0 && (
+                  {getVisibleTrashCount() > 0 && (
                     <span className="bg-slate-700/50 px-2.5 py-0.5 rounded text-sm text-gray-300">
-                      {deletedFiles.length}
+                      {getVisibleTrashCount()}
                     </span>
                   )}
                 </div>
@@ -631,9 +865,17 @@ export default function VaultPage() {
                   : 'hover:bg-slate-800/50'
               }`}
             >
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                {userName.charAt(0).toUpperCase()}
-              </div>
+              {profileImage ? (
+                <img
+                  src={profileImage}
+                  alt="Profile"
+                  className="w-8 h-8 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-orange-500 flex items-center justify-center text-white font-bold text-sm">
+                  {(userName && userName.length > 0) ? userName.charAt(0).toUpperCase() : 'U'}
+                </div>
+              )}
             </button>
 
             {showProfileDropdown && (
@@ -641,11 +883,11 @@ export default function VaultPage() {
                 userName={userName}
                 userLastName={userLastName}
                 userEmail={userEmail}
+                profileImage={profileImage}
                 storageUsed={storageUsed}
                 storageTotal={20 * 1024 ** 3}
                 onSettings={handleSettings}
                 onRecoveryKey={handleRecoveryKey}
-                on2FA={handle2FA}
                 onSignOut={handleSignOut}
               />
             )}
@@ -662,7 +904,8 @@ export default function VaultPage() {
              'Recycle Bin'}
           </h2>
 
-          {currentTab === 'vault' && (
+          {/* Show upload menu in vault, or when inside a shared folder */}
+          {(currentTab === 'vault' || (currentTab === 'shared' && currentFolderId)) && (
             <div className="absolute right-8 top-1/2 -translate-y-1/2">
               <VaultUploadMenu
                 showUploadMenu={showUploadMenu}
@@ -682,7 +925,7 @@ export default function VaultPage() {
           <div className="flex items-center gap-2 text-sm">
             <button
               onClick={() => setCurrentFolderId(null)}
-              className={`hover:text-teal-400 transition-colors ${
+              className={`hover:text-orange-400 transition-colors ${
                 currentFolderId ? 'text-gray-400' : 'text-white font-semibold'
               }`}
             >
@@ -693,11 +936,12 @@ export default function VaultPage() {
                'Recycle Bin'}
             </button>
 
-            {currentFolderId && (currentTab === 'vault' || currentTab === 'favorites') && (() => {
+            {currentFolderId && (() => {
               const segments: { id: string; name: string }[] = [];
               let id: string | null = currentFolderId;
               
-              const fileArray = currentTab === 'vault' || currentTab === 'favorites' ? files : deletedFiles;
+              // Use appropriate file array based on tab
+              const fileArray = currentTab === 'trash' ? deletedFiles : files;
 
               while (id) {
                 const f = fileArray.find((x) => x.id === id && x.type === 'folder');
@@ -711,7 +955,7 @@ export default function VaultPage() {
                   <span className="text-gray-500">/</span>
                   <button
                     onClick={() => setCurrentFolderId(seg.id)}
-                    className="text-teal-400 font-semibold hover:underline"
+                    className="text-orange-400 font-semibold hover:underline"
                   >
                     {seg.name}
                   </button>
@@ -733,8 +977,8 @@ export default function VaultPage() {
             }}
             onRecoverAll={() => {
               if (currentTab === 'trash' && displayFiles.length > 0) {
-                const ids = displayFiles.map((f) => f.id);
-                handleRestoreFiles(ids);
+                const toRestore = [...displayFiles];
+                toRestore.forEach(f => handleRestoreFile(f.id));
               }
             }}
             onDeleteAll={() => {
@@ -753,7 +997,7 @@ export default function VaultPage() {
               <div className="px-8 py-4 border-b border-slate-700/20 bg-slate-800/40 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className="text-base text-gray-300">
-                    <span className="font-semibold text-teal-400">{selectedFiles.size}</span> item{selectedFiles.size > 1 ? 's' : ''} selected
+                    <span className="font-semibold text-orange-400">{selectedFiles.size}</span> item{selectedFiles.size > 1 ? 's' : ''} selected
                   </div>
                   <button
                     onClick={handleUnselectAll}
@@ -765,10 +1009,18 @@ export default function VaultPage() {
                 
                 <div className="flex gap-3">
                   <button
+                    onClick={startBulkMoveToFolder}
+                    className="px-4 py-2 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-sm font-semibold transition-colors flex items-center gap-2"
+                  >
+                    <Image src="/encodex-folder.svg" alt="Folder" width={16} height={16} />
+                    Move to folder
+                  </button>
+                  <button
                     onClick={handleBulkDelete}
                     className="px-4 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm font-semibold transition-colors flex items-center gap-2"
                   >
-                    🗑️ Move to trash
+                    <Image src="/encodex-trash.svg" alt="Trash" width={16} height={16} />
+                    Move to trash
                   </button>
                 </div>
               </div>
@@ -776,7 +1028,7 @@ export default function VaultPage() {
               <div className="px-8 py-4 border-b border-slate-700/20 bg-slate-800/40 flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div className="text-base text-gray-300">
-                    <span className="font-semibold text-teal-400">{selectedFiles.size}</span> item{selectedFiles.size > 1 ? 's' : ''} selected
+                    <span className="font-semibold text-orange-400">{selectedFiles.size}</span> item{selectedFiles.size > 1 ? 's' : ''} selected
                   </div>
                   <button
                     onClick={handleUnselectAll}
@@ -789,9 +1041,10 @@ export default function VaultPage() {
                 <div className="flex gap-3">
                   <button
                     onClick={handleBulkRestore}
-                    className="px-4 py-2 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-400 text-sm font-semibold transition-colors flex items-center gap-2"
+                    className="px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 text-sm font-semibold transition-colors flex items-center gap-2"
                   >
-                    ↩️ Restore
+                    <Image src="/encodex-restore.svg" alt="Restore" width={16} height={16} />
+                    Restore
                   </button>
                   <button
                     onClick={() => {
@@ -800,7 +1053,8 @@ export default function VaultPage() {
                     }}
                     className="px-4 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm font-semibold transition-colors flex items-center gap-2"
                   >
-                    ❌ Delete permanently
+                    <Image src="/encodex-close.svg" alt="Delete" width={16} height={16} />
+                    Delete permanently
                   </button>
                 </div>
               </div>
@@ -890,8 +1144,8 @@ export default function VaultPage() {
                         {/* Time Period Header */}
                         <div className="bg-slate-800/50 border-b border-blue-700/20 px-6 py-3">
                           <div className="flex items-center gap-2">
-                            <div className="w-1 h-5 bg-teal-400 rounded-full"></div>
-                            <span className="text-base font-bold text-teal-400">{group.label}</span>
+                            <div className="w-1 h-5 bg-orange-400 rounded-full"></div>
+                            <span className="text-base font-bold text-orange-400">{group.label}</span>
                           </div>
                         </div>
 
@@ -915,20 +1169,20 @@ export default function VaultPage() {
                               }}
                             >
                               {/* Checkbox + Paperclip Area */}
-                              <div className="col-span-1 flex items-center h-full">
+                              <div className="col-span-1 flex items-center justify-end gap-2 h-full pr-1">
                                 <input
                                   type="checkbox"
                                   checked={selectedFiles.has(item.id)}
                                   onChange={() => handleSelectFile(item.id)}
                                   onClick={(e) => e.stopPropagation()}
-                                  className="w-4 h-4 rounded border-gray-500 text-teal-400 cursor-pointer flex-shrink-0"
+                                  className="w-4 h-4 rounded border-gray-500 text-orange-400 cursor-pointer flex-shrink-0"
                                 />
-                                {/* Spacer to push paperclip to the right, closer to paper icon */}
-                                <div className="flex-1" />
                                 {/* Paperclip indicator for shared files - right next to the Name column */}
                                 <span className="flex-shrink-0 w-[16px] flex items-center justify-center leading-none">
                                   {(item as any).isReceivedShare && (
-                                    <span className="text-sm opacity-70">📎</span>
+                                    <span className="opacity-70">
+                                      <Image src="/encodex-paperclip.svg" alt="Shared" width={14} height={14} />
+                                    </span>
                                   )}
                                 </span>
                               </div>
@@ -939,9 +1193,14 @@ export default function VaultPage() {
                                   className="flex items-center w-full cursor-pointer min-w-0 overflow-hidden"
                                   onClick={(e) => e.stopPropagation()}
                                 >
-                                  {/* Paper icon: ALWAYS 32px wide, aligned to start of Name column */}
-                                  <span className="flex-shrink-0 w-[32px] flex items-center justify-center leading-none text-2xl">
-                                    {item.type === 'folder' ? '📁' : '📄'}
+                                  {/* File icon: ALWAYS 32px wide, aligned to start of Name column */}
+                                  <span className="flex-shrink-0 w-[32px] flex items-center justify-center leading-none">
+                                    <Image 
+                                      src={item.type === 'folder' ? '/encodex-folder.svg' : getFileIcon(item.name)} 
+                                      alt={item.type === 'folder' ? 'Folder' : 'File'} 
+                                      width={28} 
+                                      height={28} 
+                                    />
                                   </span>
                                   {/* 12px fixed spacer between icon and text */}
                                   <span className="flex-shrink-0 w-[12px]" />
@@ -953,12 +1212,14 @@ export default function VaultPage() {
                                   </div>
                                   {/* Heart icon shows for ALL favorited items regardless of tab */}
                                   {item.isFavorite && (
-                                    <span className="text-base flex-shrink-0 leading-none ml-2">❤️</span>
+                                    <span className="flex-shrink-0 leading-none ml-2">
+                                      <Image src="/encodex-heart-filled.svg" alt="Favorite" width={18} height={18} />
+                                    </span>
                                   )}
                                 </div>
                               </div>
 
-                              {/* Owner */}
+                              {/* Owner - shows actual owner for shared files */}
                               <div className="col-span-2 flex items-center min-w-0 h-full">
                                 <div className="flex items-center gap-2 min-w-0">
                                   <svg className="w-5 h-5 text-gray-400 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
@@ -968,7 +1229,11 @@ export default function VaultPage() {
                                     {(() => {
                                       if ((item as any).isReceivedShare) {
                                         if ((item as any).ownerName && (item as any).owner) {
-                                          return `${(item as any).ownerName} (${(item as any).owner})`;
+                                          // only show "Name (email)" when name ≠ email
+                                          if ((item as any).ownerName !== (item as any).owner) {
+                                            return `${(item as any).ownerName} (${(item as any).owner})`;
+                                          }
+                                          return (item as any).owner;
                                         }
                                         if ((item as any).ownerName) return (item as any).ownerName;
                                         if ((item as any).owner) return (item as any).owner;
@@ -991,11 +1256,6 @@ export default function VaultPage() {
                                     e.stopPropagation();
                                     setCurrentTab('vault');
                                     setCurrentFolderId(item.parentFolderId || null);
-                                    // After navigating to the parent folder, also select the file
-                                    // so it becomes checked in the destination view.
-                                    setTimeout(() => {
-                                      handleSelectFile(item.id);
-                                    }, 100);
                                   }}
                                   className="text-blue-400 hover:text-blue-300 hover:underline transition-colors truncate"
                                 >
@@ -1011,7 +1271,7 @@ export default function VaultPage() {
                               {/* Action Buttons */}
                               <div className="col-span-1 flex items-center justify-end h-full">
                                 <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {/* Share — FIX 2: calls openShareModal, not handleShareFile */}
+                                  {/* Share */}
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1020,7 +1280,7 @@ export default function VaultPage() {
                                     className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                                     title="Share"
                                   >
-                                    <span className="text-base leading-none">👥</span>
+                                    <Image src="/encodex-users.svg" alt="Share" width={18} height={18} />
                                   </button>
 
                                   {/* Download */}
@@ -1032,7 +1292,7 @@ export default function VaultPage() {
                                     className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                                     title="Download"
                                   >
-                                    <span className="text-base leading-none">⬇️</span>
+                                    <Image src="/encodex-download.svg" alt="Download" width={18} height={18} />
                                   </button>
 
                                   {/* Rename */}
@@ -1044,7 +1304,7 @@ export default function VaultPage() {
                                     className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                                     title="Rename"
                                   >
-                                    <span className="text-base leading-none">✏️</span>
+                                    <Image src="/encodex-edit.svg" alt="Rename" width={18} height={18} />
                                   </button>
 
                                   {/* Favorite */}
@@ -1056,9 +1316,12 @@ export default function VaultPage() {
                                     className="p-1.5 hover:bg-gray-700/50 rounded-full transition-colors"
                                     title={item.isFavorite ? "Remove from favorites" : "Add to favorites"}
                                   >
-                                    <span className="text-base leading-none">
-                                      {item.isFavorite ? '❤️' : '🤍'}
-                                    </span>
+                                    <Image 
+                                      src={item.isFavorite ? '/encodex-heart-filled.svg' : '/encodex-heart-outline.svg'} 
+                                      alt={item.isFavorite ? "Remove from favorites" : "Add to favorites"} 
+                                      width={18} 
+                                      height={18} 
+                                    />
                                   </button>
 
                                   {/* Menu */}
@@ -1126,12 +1389,14 @@ export default function VaultPage() {
               onDownloadFile={handleDownloadFile}
               onToggleFavorite={handleToggleFavorite}
               onShareFile={openShareModal}
-              onUnshareFile={(fileId) => handleUnshareAll(fileId)}
               onOpenFile={handleOpenFile}
               sortBy={sortBy}
               sortOrder={sortOrder}
               onSortChange={handleSortChange}
               allFiles={currentTab === 'trash' ? deletedFiles : files}
+              currentUserEmail={userEmail}
+              currentUserName={userName}
+              currentUserProfileImage={profileImage}
             />
           )}
         </div>
@@ -1147,6 +1412,218 @@ export default function VaultPage() {
         />
       </div>
 
+      {/* RECOVERY KEY MODAL - PAGE LEVEL - MATCHING REFERENCE LAYOUT */}
+      {showRecoveryKeyModal && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
+          {/* Backdrop */}
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.5)',
+              backdropFilter: 'blur(4px)',
+            }}
+            onClick={closeRecoveryModal}
+          />
+
+          {/* Modal Container */}
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '1rem',
+              pointerEvents: 'none',
+            }}
+          >
+            {/* Modal */}
+            <div
+              style={{
+                width: '1050px',
+                maxWidth: '95vw',
+                height: '650px',
+                maxHeight: '90vh',
+                background: 'linear-gradient(to bottom, rgb(30 58 138), rgb(23 37 84))',
+                borderRadius: '0.5rem',
+                border: '1px solid rgba(29 78 216 / 0.5)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+                position: 'relative',
+                pointerEvents: 'auto',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Close Button */}
+              <button
+                onClick={closeRecoveryModal}
+                style={{
+                  position: 'absolute',
+                  top: '1.5rem',
+                  right: '1.5rem',
+                  padding: '0.5rem',
+                  borderRadius: '0.5rem',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: '#9ca3af',
+                  transition: 'all 0.2s',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = 'rgba(30 58 138 / 0.3)';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color = '#9ca3af';
+                }}
+              >
+                <svg style={{ width: '1.5rem', height: '1.5rem' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+
+              {/* Content Container */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: '100%',
+                  padding: '3rem 4rem',
+                }}
+              >
+                {/* Icon */}
+                <div style={{ marginBottom: '2rem' }}>
+                  <div
+                    style={{
+                      width: '8rem',
+                      height: '8rem',
+                      background: 'linear-gradient(to bottom right, rgba(59 130 246 / 0.2), rgba(37 99 235 / 0.2))',
+                      borderRadius: '1rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      border: '1px solid rgba(59 130 246 / 0.3)',
+                    }}
+                  >
+                    <svg style={{ width: '4rem', height: '4rem', color: '#fbbf24' }} fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12.65 10C11.7 7.31 8.9 5.5 5.77 6.12c-2.29.46-4.15 2.29-4.63 4.58C.32 14.57 3.26 18 7 18c2.61 0 4.83-1.67 5.65-4H17v2c0 1.1.9 2 2 2s2-.9 2-2v-2c1.1 0 2-.9 2-2s-.9-2-2-2h-8.35zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
+                    </svg>
+                  </div>
+                </div>
+
+                {/* Title */}
+                <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', color: 'white', marginBottom: '1rem' }}>
+                  Account recovery
+                </h2>
+                
+                {/* Description */}
+                <p style={{ textAlign: 'center', color: '#d1d5db', marginBottom: '3rem', maxWidth: '42rem', lineHeight: '1.625' }}>
+                  Export and save your recovery key to avoid your data becoming inaccessible should you ever lose your password or authenticator.{' '}
+                  <span style={{ color: '#60a5fa', textDecoration: 'underline', cursor: 'pointer' }}>Learn more.</span>
+                </p>
+
+                {/* Recovery Key Box */}
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: '48rem',
+                    background: 'rgba(23 37 84 / 0.5)',
+                    border: '1px solid rgba(29 78 216 / 0.3)',
+                    borderRadius: '0.5rem',
+                    padding: '2rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ flex: 1 }}>
+                      <h3 style={{ fontSize: '1.125rem', fontWeight: '600', color: 'white', marginBottom: '0.75rem' }}>
+                        Export your recovery key
+                      </h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <Image src="/encodex-key.svg" alt="Key" width={24} height={24} />
+                        <code style={{ color: '#fbbf24', fontSize: '1.25rem', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
+                          {recoveryKey}
+                        </code>
+                      </div>
+                    </div>
+                    
+                    {/* Download Button */}
+                    <button
+                      onClick={handleDownloadRecoveryKey}
+                      style={{
+                        marginLeft: '2rem',
+                        padding: '0.75rem 2rem',
+                        backgroundColor: '#f97316',
+                        color: 'white',
+                        borderRadius: '0.5rem',
+                        fontWeight: '600',
+                        border: 'none',
+                        cursor: 'pointer',
+                        boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.2)',
+                        fontSize: '1rem',
+                        transition: 'all 0.2s',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor = '#ea580c';
+                        e.currentTarget.style.transform = 'translateY(-2px)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = '#f97316';
+                        e.currentTarget.style.transform = 'translateY(0)';
+                      }}
+                    >
+                      Download
+                    </button>
+                  </div>
+                  
+                  {/* Copy Button */}
+                  <button
+                    onClick={handleCopyRecoveryKey}
+                    style={{
+                      marginTop: '1rem',
+                      fontSize: '0.875rem',
+                      color: copied ? '#34d399' : '#60a5fa',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      padding: 0,
+                      transition: 'color 0.2s',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!copied) e.currentTarget.style.color = '#93c5fd';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!copied) e.currentTarget.style.color = '#60a5fa';
+                    }}
+                  >
+                    {copied ? (
+                      <>
+                        <svg style={{ width: '1rem', height: '1rem' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>Copied to clipboard!</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg style={{ width: '1rem', height: '1rem' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <span>Copy to clipboard</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODALS */}
       <VaultContextMenu
         contextMenu={contextMenu}
@@ -1155,6 +1632,9 @@ export default function VaultPage() {
         onRenameStart={(id, name) => startRename(id, name)}
         onDeleteFile={handleDeleteFile}
         onMoveToFolderStart={startMoveToFolder}
+        onShareFile={openShareModal}
+        onDownloadFile={handleDownloadFile}
+        onToggleFavorite={handleToggleFavorite}
       />
 
       <FolderModal
@@ -1187,11 +1667,13 @@ export default function VaultPage() {
         onClose={() => {
           setMoveModalOpen(false);
           setMoveTargetId(null);
+          setBulkMoveTargetIds([]);
         }}
         files={files}
         excludeId={moveTargetId}
+        excludeIds={bulkMoveTargetIds}
         onConfirm={(targetId) => {
-          if (moveTargetId) handleMoveToFolder(moveTargetId, targetId);
+          handleBulkMoveToFolder(targetId);
         }}
       />
 
@@ -1211,22 +1693,38 @@ export default function VaultPage() {
         itemType={renameTargetId ? (files.find(f => f.id === renameTargetId)?.type || 'file') : 'file'}
       />
 
-      {/* FIX 3: onShare now calls the hook's handleShareFile (the real one).
-          It returns a boolean — true = success, false = failure.
-          The ShareModal uses that boolean to show its own success/error state
-          and auto-closes itself after 2 seconds on success. */}
       <ShareModal
         isOpen={shareModalOpen}
         onClose={() => {
           setShareModalOpen(false);
           setShareTargetId(null);
+          setCurrentShareRecipients([]);
         }}
         currentUserName={userName}
         currentUserEmail={userEmail}
+        currentUserProfileImage={profileImage}
         fileName={shareTargetId ? files.find(f => f.id === shareTargetId)?.name || '' : ''}
+        fileId={shareTargetId}
+        currentSharedWith={currentShareRecipients}
         onShare={(recipientEmail) => {
           if (!shareTargetId) return false;
           return handleShareFile(shareTargetId, recipientEmail, userName);
+        }}
+        onUnshare={async (recipientEmail: string) => {
+          if (!shareTargetId) return false;
+          try {
+            const ok = await sharedFilesManager.unshareFile(shareTargetId, recipientEmail);
+            if (ok) {
+              // Update local state immediately
+              setCurrentShareRecipients(prev => prev.filter(e => e !== recipientEmail));
+            }
+            // Trigger a sync so UI updates immediately
+            sharedFilesManager.triggerSync();
+            return ok;
+          } catch (e) {
+            
+            return false;
+          }
         }}
       />
 

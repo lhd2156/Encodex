@@ -7,12 +7,14 @@ export default function AuthCard({
   return (
     <div
       className="
-        w-[720px]
-        min-h-[680px]
+        w-full
+        lg:w-[720px]
         bg-neutral-800
         rounded-2xl
-        px-14
-        py-14
+        px-6
+        lg:px-14
+        py-6
+        lg:py-10
         flex
         flex-col
       "

@@ -37,7 +37,7 @@ export default function StorageStats({
         </div>
         <div className="w-full bg-blue-800/40 rounded-full h-3 overflow-hidden">
           <div
-            className="bg-gradient-to-r from-teal-400 to-teal-500 h-full transition-all duration-300 shadow-lg shadow-teal-500/50"
+            className="bg-gradient-to-r from-gray-400 to-gray-500 h-full transition-all duration-300"
             style={{ width: `${Math.min(usedPercent, 100)}%` }}
           ></div>
         </div>
