@@ -23,7 +23,8 @@ model User {
   salt         Bytes
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
-  
+  recoveryKeyHash String?
+  recoveryKey String?
   // Relations
   files        File[]
   

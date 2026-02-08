@@ -1,9 +1,8 @@
-// FILE LOCATION: app/api/auth/signup/route.ts
-// User registration endpoint
-
+// app/api/auth/signup/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { hashPassword, createToken } from '@/lib/auth';
+import { generateRecoveryKey, storeRecoveryKey } from '@/lib/recoveryKey';
 
 export async function POST(req: NextRequest) {
   try {
@@ -36,12 +35,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Generate salt for encryption (16 bytes)
     const salt = Buffer.from(crypto.getRandomValues(new Uint8Array(16)));
-
-    // Hash password for authentication
     const passwordHash = await hashPassword(password);
 
+    console.log('🔵 About to create user...');
+    
     // Create user
     const user = await prisma.user.create({
       data: {
@@ -53,8 +51,21 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // Create JWT token
+    console.log('✅ User created:', user.email);
+
+    // Generate recovery key
+    console.log('🔵 Generating recovery key...');
+    const recoveryKey = generateRecoveryKey();
+    console.log('✅ Recovery key generated');
+
+    // Store recovery key in database - THIS IS THE IMPORTANT PART!
+    console.log('🔵 About to store recovery key...');
+    await storeRecoveryKey(user.email, recoveryKey);
+    console.log('✅ Recovery key stored');
+
     const token = createToken(user.id, user.email);
+
+    console.log('✅ Signup complete for:', user.email);
 
     return NextResponse.json({
       success: true,
@@ -65,11 +76,13 @@ export async function POST(req: NextRequest) {
         firstName: user.firstName,
         lastName: user.lastName
       },
-      salt: Array.from(salt) // Send salt to client for encryption
+      salt: Array.from(salt),
+      recoveryKey // Send to client so user can save it
     });
 
   } catch (error) {
-    
+    console.error('❌ Signup error:', error);
+    console.error('Error details:', JSON.stringify(error, null, 2));
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
