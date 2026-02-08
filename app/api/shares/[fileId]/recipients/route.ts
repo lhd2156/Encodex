@@ -2,35 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getUserEmailFromToken } from '@/lib/auth';
 
-/**
- * GET /api/shares/[fileId]/recipients
- * 
- * Returns all recipients (people the file is shared with) for a specific file.
- * Only the file owner can call this endpoint.
- * 
- * Response: { success: true, data: [{ email, name, sharedAt, permissions }] }
- */
+// GET /api/shares/[fileId]/recipients - Returns all share recipients for a file
 export async function GET(
   req: NextRequest,
-  { params }: { params: { fileId: string } }
+  context: { params: Promise<{ fileId: string }> }
 ) {
   try {
-    // Extract and verify authentication token
+    const { fileId } = await context.params;
+    
     const token = req.headers.get('authorization')?.replace('Bearer ', '');
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get user email from token
     const userEmail = await getUserEmailFromToken(token);
     if (!userEmail) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    // Get fileId from URL params
-    const { fileId } = params;
-
-    // Verify user owns the file
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
@@ -45,7 +34,6 @@ export async function GET(
       );
     }
 
-    // Get all shares for this file, joining with User to get live recipient names
     const shares = await prisma.share.findMany({
       where: {
         fileId: fileId,
@@ -59,7 +47,6 @@ export async function GET(
       },
     });
 
-    // Fetch live recipient names from User table
     const recipientEmails = shares.map(s => s.recipientEmail.toLowerCase());
     const recipientUsers = await prisma.user.findMany({
       where: {
@@ -75,14 +62,12 @@ export async function GET(
       },
     });
 
-    // Create a map for quick lookup
     const userNameMap = new Map<string, string>();
     recipientUsers.forEach(user => {
       const fullName = `${user.firstName} ${user.lastName}`.trim();
       userNameMap.set(user.email.toLowerCase(), fullName);
     });
 
-    // Format the response with live names in "FirstName (email)" format
     const recipients = shares.map(share => {
       const userData = recipientUsers.find(u => u.email.toLowerCase() === share.recipientEmail.toLowerCase());
       const displayName = userData
@@ -96,14 +81,12 @@ export async function GET(
       };
     });
 
-    console.log(`✅ [RECIPIENTS] File ${fileId} has ${recipients.length} recipient(s)`);
-
     return NextResponse.json({
       success: true,
       data: recipients,
     });
   } catch (error) {
-    console.error('❌ [RECIPIENTS] Error fetching recipients:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch recipients' },
       { status: 500 }

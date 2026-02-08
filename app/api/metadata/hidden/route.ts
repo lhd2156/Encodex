@@ -1,4 +1,3 @@
-// FILE LOCATION: app/api/metadata/hidden/route.ts
 // Manage hidden_shares metadata (permanently hidden shared files)
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,13 +12,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get user's metadata
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { hiddenShares: true }
+    const hiddenShares = await prisma.hiddenShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
-    const hidden = userData?.hiddenShares || [];
+    const hidden = hiddenShares.map(h => h.fileId);
 
     return NextResponse.json({
       success: true,
@@ -27,7 +25,6 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Get hidden shares error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -46,30 +43,36 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { hiddenShares: true }
-    });
+    // Add each fileId (upsert to avoid duplicates)
+    for (const fileId of fileIds) {
+      await prisma.hiddenShare.upsert({
+        where: {
+          fileId_recipientEmail: {
+            fileId,
+            recipientEmail: user.email
+          }
+        },
+        create: {
+          fileId,
+          recipientEmail: user.email,
+          shareId: fileId // Using fileId as shareId for now
+        },
+        update: {}
+      });
+    }
 
-    const currentList = userData?.hiddenShares || [];
-    
-    // Add new IDs (deduplicate)
-    const updated = [...new Set([...currentList, ...fileIds])];
-
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { hiddenShares: updated }
+    // Get updated list
+    const hiddenShares = await prisma.hiddenShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
     return NextResponse.json({
       success: true,
-      fileIds: updated
+      fileIds: hiddenShares.map(h => h.fileId)
     });
 
   } catch (error) {
-    console.error('Add hidden shares error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -88,30 +91,26 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { hiddenShares: true }
+    // Delete the hidden records
+    await prisma.hiddenShare.deleteMany({
+      where: {
+        recipientEmail: user.email,
+        fileId: { in: fileIds }
+      }
     });
 
-    const currentList = userData?.hiddenShares || [];
-    
-    // Remove specified IDs
-    const updated = currentList.filter(id => !fileIds.includes(id));
-
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { hiddenShares: updated }
+    // Get updated list
+    const hiddenShares = await prisma.hiddenShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
     return NextResponse.json({
       success: true,
-      fileIds: updated
+      fileIds: hiddenShares.map(h => h.fileId)
     });
 
   } catch (error) {
-    console.error('Remove hidden shares error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

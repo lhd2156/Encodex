@@ -1,6 +1,7 @@
  'use client';
 
 import React from 'react';
+import Image from 'next/image';
 
 interface FileItem {
   id: string;
@@ -15,14 +16,20 @@ interface MoveToFolderModalProps {
   isOpen: boolean;
   onClose: () => void;
   files: FileItem[];
-  excludeId?: string | null; // file/folder being moved (exclude from target list)
+  excludeId?: string | null; // single file/folder being moved (exclude from target list)
+  excludeIds?: string[]; // multiple files/folders being moved (for bulk move)
   onConfirm: (targetFolderId: string | null) => void; // null = root (Vault)
 }
 
-export default function MoveToFolderModal({ isOpen, onClose, files, excludeId, onConfirm }: MoveToFolderModalProps) {
+export default function MoveToFolderModal({ isOpen, onClose, files, excludeId, excludeIds, onConfirm }: MoveToFolderModalProps) {
   if (!isOpen) return null;
 
-  const folders = files.filter((f) => f.type === 'folder');
+  // Build set of IDs to exclude (both single and bulk)
+  const excludeSet = new Set<string>();
+  if (excludeId) excludeSet.add(excludeId);
+  if (excludeIds) excludeIds.forEach(id => excludeSet.add(id));
+
+  const folders = files.filter((f) => f.type === 'folder' && !excludeSet.has(f.id));
 
   return (
     <>
@@ -38,14 +45,14 @@ export default function MoveToFolderModal({ isOpen, onClose, files, excludeId, o
             Vault (root)
           </button>
           {folders.map((f) => {
-            if (f.id === excludeId) return null;
             return (
               <button
                 key={f.id}
                 onClick={() => { onConfirm(f.id); onClose(); }}
-                className="w-full text-left px-3 py-2 bg-blue-800/10 rounded hover:bg-blue-800/30"
+                className="w-full text-left px-3 py-2 bg-blue-800/10 rounded hover:bg-blue-800/30 flex items-center gap-2"
               >
-                📁 {f.name}
+                <Image src="/encodex-folder.svg" alt="Folder" width={18} height={18} />
+                {f.name}
               </button>
             );
           })}

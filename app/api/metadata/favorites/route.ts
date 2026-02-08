@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('❌ [FAVORITES] GET error:', error);
+    
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -59,12 +59,10 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    console.log(`⭐ [FAVORITES] Added favorite for ${user.email}: ${fileId}`);
-
     return NextResponse.json({ success: true });
 
   } catch (error) {
-    console.error('❌ [FAVORITES] POST error:', error);
+    
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -90,12 +88,10 @@ export async function DELETE(req: NextRequest) {
       }
     });
 
-    console.log(`⭐ [FAVORITES] Removed favorite for ${user.email}: ${fileId}`);
-
     return NextResponse.json({ success: true });
 
   } catch (error) {
-    console.error('❌ [FAVORITES] DELETE error:', error);
+    
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

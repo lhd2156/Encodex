@@ -102,14 +102,14 @@ export default function UploadProgressPopup({
           <div className="flex border-b border-blue-700/20 px-5">
             <div className={`py-3 px-4 text-sm font-semibold cursor-pointer border-b-2 transition-colors ${
               inProgress.length > 0 
-                ? 'text-gray-300 border-teal-400' 
+                ? 'text-gray-300 border-orange-400' 
                 : 'text-gray-500 border-transparent'
             }`}>
               In progress
             </div>
             <div className={`py-3 px-4 text-sm font-semibold cursor-pointer border-b-2 transition-colors ${
               inProgress.length === 0 
-                ? 'text-teal-400 border-teal-400' 
+                ? 'text-orange-400 border-orange-400' 
                 : 'text-gray-500 border-transparent'
             }`}>
               Completed
@@ -136,7 +136,7 @@ export default function UploadProgressPopup({
                       {/* Progress Bar */}
                       <div className="w-full bg-blue-800/40 rounded-full h-1.5 mb-1">
                         <div
-                          className="bg-gradient-to-r from-teal-400 to-teal-500 h-full rounded-full transition-all duration-300"
+                          className="bg-gradient-to-r from-orange-400 to-orange-500 h-full rounded-full transition-all duration-300"
                           style={{ width: `${item.progress}%` }}
                         />
                       </div>
@@ -160,8 +160,8 @@ export default function UploadProgressPopup({
                   {allCompleted.map((fileName, index) => (
                     <div key={index} className="flex items-center gap-3 animate-fade-in">
                       {/* Check Icon */}
-                      <div className="flex-shrink-0 w-10 h-10 bg-teal-500/20 rounded-lg flex items-center justify-center">
-                        <svg className="w-6 h-6 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <div className="flex-shrink-0 w-10 h-10 bg-orange-500/20 rounded-lg flex items-center justify-center">
+                        <svg className="w-6 h-6 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                         </svg>
                       </div>
@@ -169,7 +169,7 @@ export default function UploadProgressPopup({
                       {/* File Info */}
                       <div className="flex-1 min-w-0">
                         <div className="text-sm text-white truncate">{fileName}</div>
-                        <div className="text-xs text-teal-400">Upload complete</div>
+                        <div className="text-xs text-orange-400">Upload complete</div>
                       </div>
 
                       {/* Action Buttons */}
@@ -177,7 +177,7 @@ export default function UploadProgressPopup({
                         {/* View/Focus File Button */}
                         <button
                           onClick={() => onSelectFile(fileName)}
-                          className="p-1.5 rounded hover:bg-blue-800/40 text-gray-400 hover:text-teal-400 transition-colors"
+                          className="p-1.5 rounded hover:bg-blue-800/40 text-gray-400 hover:text-orange-400 transition-colors"
                           title="View file in vault"
                         >
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

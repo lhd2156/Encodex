@@ -55,7 +55,7 @@ export function verifyToken(token: string): { userId: string; email: string; nam
       name: decoded.name
     };
   } catch (error) {
-    console.error('❌ [AUTH] Token verification failed:', error);
+    
     return null;
   }
 }
@@ -88,7 +88,7 @@ export async function getUserEmailFromToken(token: string): Promise<string | nul
     // Always return lowercase for case-insensitive comparisons
     return decoded.email?.toLowerCase() || null;
   } catch (error) {
-    console.error('❌ [AUTH] Token verification failed:', error);
+    
     return null;
   }
 }
@@ -112,7 +112,7 @@ export async function getUserFromToken(token: string): Promise<{
       name: decoded.name,
     };
   } catch (error) {
-    console.error('❌ [AUTH] Token verification failed:', error);
+    
     return null;
   }
 }

@@ -1,5 +1,7 @@
 'use client';
 
+import Image from 'next/image';
+
 interface VaultEmptyProps {
   currentTab: string;
   currentFolderId?: string | null;
@@ -18,7 +20,9 @@ export default function VaultEmpty({
   return (
     <div className="flex min-h-full h-full w-full items-center justify-center">
       <div className="flex flex-col items-center justify-center w-full max-w-xs">
-        <div className="text-6xl mb-4">🔒</div>
+        <div className="mb-4 flex justify-center">
+          <Image src="/encodex-lock.svg" alt="Secure vault" width={72} height={72} />
+        </div>
         <p className="text-gray-300 text-xl font-semibold mb-1">
           {currentTab === 'vault'
             ? currentFolderId
@@ -37,7 +41,7 @@ export default function VaultEmpty({
                 }
                 setShowUploadMenu(true);
               }}
-              className="px-7 py-3 rounded-lg bg-teal-500/90 hover:bg-teal-500 text-white font-semibold transition-colors shadow-md"
+              className="px-7 py-3 rounded-lg bg-orange-500/90 hover:bg-orange-500 text-white font-semibold transition-colors shadow-md"
             >
               Upload
             </button>

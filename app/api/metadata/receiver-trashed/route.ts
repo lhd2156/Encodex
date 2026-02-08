@@ -1,4 +1,3 @@
-// FILE LOCATION: app/api/metadata/receiver-trashed/route.ts
 // Manage receiver_trashed_shares metadata (receiver moves shared file to their trash)
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -13,21 +12,17 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get user's metadata
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { receiverTrashedShares: true }
+    const trashedShares = await prisma.receiverTrashedShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
-
-    const receiverTrashed = userData?.receiverTrashedShares || [];
 
     return NextResponse.json({
       success: true,
-      fileIds: receiverTrashed
+      fileIds: trashedShares.map(t => t.fileId)
     });
 
   } catch (error) {
-    console.error('Get receiver trashed error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -46,30 +41,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { receiverTrashedShares: true }
-    });
+    // Add each fileId (upsert to avoid duplicates)
+    for (const fileId of fileIds) {
+      await prisma.receiverTrashedShare.upsert({
+        where: {
+          fileId_recipientEmail: {
+            fileId,
+            recipientEmail: user.email
+          }
+        },
+        create: {
+          fileId,
+          recipientEmail: user.email,
+          shareId: fileId
+        },
+        update: {}
+      });
+    }
 
-    const currentList = userData?.receiverTrashedShares || [];
-    
-    // Add new IDs (deduplicate)
-    const updated = [...new Set([...currentList, ...fileIds])];
-
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { receiverTrashedShares: updated }
+    const trashedShares = await prisma.receiverTrashedShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
     return NextResponse.json({
       success: true,
-      fileIds: updated
+      fileIds: trashedShares.map(t => t.fileId)
     });
 
   } catch (error) {
-    console.error('Add receiver trashed error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -88,30 +88,24 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { receiverTrashedShares: true }
+    await prisma.receiverTrashedShare.deleteMany({
+      where: {
+        recipientEmail: user.email,
+        fileId: { in: fileIds }
+      }
     });
 
-    const currentList = userData?.receiverTrashedShares || [];
-    
-    // Remove specified IDs
-    const updated = currentList.filter(id => !fileIds.includes(id));
-
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { receiverTrashedShares: updated }
+    const trashedShares = await prisma.receiverTrashedShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
     return NextResponse.json({
       success: true,
-      fileIds: updated
+      fileIds: trashedShares.map(t => t.fileId)
     });
 
   } catch (error) {
-    console.error('Remove receiver trashed error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

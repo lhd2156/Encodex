@@ -6,6 +6,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createSession } from "@/lib/session";
+import { useVaultContext } from "@/lib/vault/vault-context";
 
 import AuthLayout from "@/components/auth/AuthLayout";
 import AuthCard from "@/components/auth/AuthCard";
@@ -13,9 +14,11 @@ import AuthInput from "@/components/auth/AuthInput";
 import PasswordInput from "@/components/auth/PasswordInput";
 import AuthButton from "@/components/auth/AuthButton";
 import AuthInfo from "@/components/auth/AuthInfo";
+import Image from "next/image";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { unlock } = useVaultContext();
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const rememberRef = useRef<HTMLInputElement>(null);
@@ -50,7 +53,7 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      // ✅ CALL API INSTEAD OF LOCALSTORAGE
+      // CALL API INSTEAD OF LOCALSTORAGE
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -66,18 +69,18 @@ export default function LoginPage() {
         return;
       }
 
-      // ✅ CRITICAL FIX: Clear ALL old session data before setting new
+      // FIX: Clear ALL old session data before setting new
       // This prevents cross-user data contamination
       sessionStorage.clear(); // Clear all sessionStorage
       localStorage.removeItem('user_session');
       localStorage.removeItem('session');
       localStorage.removeItem('user');
       
-      // ✅ STORE AUTH TOKEN (sessionStorage for per-tab isolation)
+      // STORE AUTH TOKEN (sessionStorage for per-tab isolation)
       sessionStorage.setItem('auth_token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
       
-      // ✅ STORE SALT FOR ENCRYPTION
+      // STORE SALT FOR ENCRYPTION
       if (data.salt) {
         const saltUint8 = new Uint8Array(data.salt);
         const hexSalt = Array.from(saltUint8)
@@ -98,34 +101,41 @@ export default function LoginPage() {
       // Create session
       createSession(email, data.user.firstName, data.user.lastName, rememberMe);
 
-      console.log('✅ Login successful for:', email);
+      // Auto-unlock vault with the same password (E2E encryption)
+      try {
+        await unlock(password);
+      } catch (e) {
+        // Unlock may fail if salt not ready yet - vault modal will handle it
+      }
 
       // Redirect to vault
       router.push("/vault");
 
     } catch (error) {
-      console.error('Login error:', error);
+      
       alert('An error occurred during login. Please try again.');
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="h-screen bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      <header className="flex justify-between items-center px-12 py-8">
+    <div className="h-screen flex flex-col bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
+      <header className="flex-shrink-0 flex justify-between items-center px-4 sm:px-8 lg:px-12 py-4 lg:py-6">
         <div 
           onClick={() => router.push('/start')} 
-          className="flex items-center gap-3 cursor-pointer"
+          className="flex items-center gap-2 sm:gap-3 cursor-pointer"
         >
-          <div className="text-3xl">🔒</div>
-          <span className="text-[28px] font-semibold tracking-wide text-white">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-orange-500 flex items-center justify-center">
+            <Image src="/encodex-logo-lock.svg" alt="Encodex" width={24} height={24} className="sm:w-7 sm:h-7" />
+          </div>
+          <span className="text-xl sm:text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
         </div>
 
         <button
           onClick={() => router.push('/register')}
-          className="px-6 py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white font-medium transition-colors cursor-pointer"
+          className="px-4 sm:px-6 py-2 sm:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-sm sm:text-base font-medium transition-colors cursor-pointer"
         >
           Sign up
         </button>
@@ -134,11 +144,11 @@ export default function LoginPage() {
       <AuthLayout
         left={
           <AuthCard>
-            <h1 className="text-[32px] text-center mb-12 text-white">
+            <h1 className="text-[28px] lg:text-[32px] text-center mb-8 lg:mb-10 text-white">
               Log in
             </h1>
 
-            <div className="flex flex-col gap-8">
+            <div className="flex flex-col gap-6 lg:gap-8">
               <AuthInput
                 label="Your email address"
                 inputRef={emailRef as React.RefObject<HTMLInputElement>}
@@ -152,7 +162,7 @@ export default function LoginPage() {
               />
             </div>
 
-            <div className="flex justify-end text-sm text-neutral-400 mt-4">
+            <div className="flex justify-end text-sm text-neutral-400 mt-3 lg:mt-4">
               <span 
                 onClick={() => router.push('/forgot-password')} 
                 className="underline hover:text-neutral-300 transition-colors cursor-pointer"
@@ -161,7 +171,7 @@ export default function LoginPage() {
               </span>
             </div>
 
-            <div className="flex-grow" />
+            <div className="flex-grow min-h-4 lg:min-h-8" />
 
             <div className="flex items-center justify-between">
               <label
@@ -169,9 +179,6 @@ export default function LoginPage() {
                   flex items-center gap-2
                   text-sm text-neutral-400
                   cursor-pointer
-                  h-[56px]
-                  self-end
-                  mb-[6px]
                 "
               >
                 <input 
@@ -182,14 +189,14 @@ export default function LoginPage() {
                 Remember me
               </label>
 
-              <div className="w-[220px]">
+              <div className="w-[180px] lg:w-[220px]">
                 <AuthButton onClick={handleLogin} disabled={isLoading}>
                   {isLoading ? 'Logging in...' : 'Log in'}
                 </AuthButton>
               </div>
             </div>
 
-            <p className="text-sm text-center mt-8 text-neutral-400">
+            <p className="text-sm text-center mt-6 lg:mt-8 text-neutral-400">
               Don't have an account?{" "}
               <span 
                 onClick={() => router.push('/register')} 

@@ -16,21 +16,18 @@ class FileStorage {
     }
 
     this.dbPromise = new Promise((resolve, reject) => {
-      console.debug('[fileStorage] opening IndexedDB', { name: DB_NAME, version: DB_VERSION });
       const request = indexedDB.open(DB_NAME, DB_VERSION);
 
       request.onerror = () => {
-        console.error('[fileStorage] indexedDB open error', request.error);
+        
         reject(request.error);
       };
       request.onsuccess = () => {
-        console.debug('[fileStorage] indexedDB opened', request.result.name, request.result.version);
         resolve(request.result);
       };
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
-        console.debug('[fileStorage] indexedDB onupgradeneeded - creating store if missing', STORE_NAME);
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME);
         }
@@ -49,19 +46,17 @@ class FileStorage {
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
-        console.debug('[fileStorage] putting file into store', { fileId, size: (file as any).size || 'unknown' });
         const request = store.put(file, fileId);
 
         request.onsuccess = () => {
-          console.debug('[fileStorage] store.put onsuccess', fileId);
           resolve();
         };
         request.onerror = () => {
-          console.error('[fileStorage] store.put onerror', fileId, request.error);
+          
           reject(request.error);
         };
       } catch (e) {
-        console.error('[fileStorage] storeFile transaction failed', e);
+        
         reject(e);
       }
     });
@@ -86,15 +81,14 @@ class FileStorage {
         const request = store.get(fileId);
 
         request.onsuccess = () => {
-          console.debug('[fileStorage] getFile onsuccess', fileId, !!request.result);
           resolve(request.result || null);
         };
         request.onerror = () => {
-          console.error('[fileStorage] getFile onerror', fileId, request.error);
+          
           reject(request.error);
         };
       } catch (e) {
-        console.error('[fileStorage] getFile transaction failed', e);
+        
         reject(e);
       }
     });
@@ -109,19 +103,17 @@ class FileStorage {
       try {
         const transaction = db.transaction([STORE_NAME], 'readwrite');
         const store = transaction.objectStore(STORE_NAME);
-        console.debug('[fileStorage] deleting file', fileId);
         const request = store.delete(fileId);
 
         request.onsuccess = () => {
-          console.debug('[fileStorage] delete onsuccess', fileId);
           resolve();
         };
         request.onerror = () => {
-          console.error('[fileStorage] delete onerror', fileId, request.error);
+          
           reject(request.error);
         };
       } catch (e) {
-        console.error('[fileStorage] deleteFile transaction failed', e);
+        
         reject(e);
       }
     });
@@ -134,7 +126,6 @@ class FileStorage {
     const blob = await this.getFile(fileId);
     if (!blob) return null;
     const url = URL.createObjectURL(blob);
-    console.debug('[fileStorage] created object URL for', fileId, url);
     return url;
   }
 
@@ -157,15 +148,14 @@ class FileStorage {
         const store = tx.objectStore(STORE_NAME);
         const req = store.getAllKeys();
         req.onsuccess = () => {
-          console.debug('[fileStorage] getAllKeys success', req.result?.length || 0);
           resolve(req.result as string[]);
         };
         req.onerror = () => {
-          console.error('[fileStorage] getAllKeys error', req.error);
+          
           reject(req.error);
         };
       } catch (e) {
-        console.error('[fileStorage] getAllKeys transaction failed', e);
+        
         reject(e);
       }
     });

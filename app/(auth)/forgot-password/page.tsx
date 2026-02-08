@@ -2,6 +2,7 @@
 
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
@@ -52,7 +53,8 @@ export default function ForgotPasswordPage() {
 
     // Check if account exists
     const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
-    const account = accounts.find((acc: any) => acc.email === email);
+    const normalizedEmail = email.toLowerCase();
+    const account = accounts.find((acc: any) => acc.email.toLowerCase() === normalizedEmail);
 
     if (!account) {
       setEmailError(true);
@@ -60,8 +62,8 @@ export default function ForgotPasswordPage() {
       return;
     }
 
-    // Verify recovery key
-    const storedKey = localStorage.getItem(`recovery_key_${email}`);
+    // Verify recovery key (use normalized email for lookup)
+    const storedKey = localStorage.getItem(`recovery_key_${normalizedEmail}`);
     if (!storedKey || storedKey !== recoveryKey) {
       setRecoveryKeyError(true);
       setErrorMessage('Invalid recovery key');
@@ -73,7 +75,7 @@ export default function ForgotPasswordPage() {
     setStep('reset');
   };
 
-  const handleResetPassword = () => {
+  const handleResetPassword = async () => {
     const newPassword = newPasswordRef.current?.value ?? '';
     const confirmPassword = confirmPasswordRef.current?.value ?? '';
 
@@ -94,17 +96,35 @@ export default function ForgotPasswordPage() {
       return;
     }
 
-    // Update password
-    const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
-    const accountIndex = accounts.findIndex((acc: any) => acc.email === verifiedEmail);
+    try {
+      // Call API to reset password in database
+      const response = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: verifiedEmail, newPassword })
+      });
 
-    if (accountIndex !== -1) {
-      accounts[accountIndex].password = newPassword;
-      localStorage.setItem('userAccounts', JSON.stringify(accounts));
+      if (!response.ok) {
+        const data = await response.json();
+        setPasswordError(true);
+        setErrorMessage(data.error || 'Failed to reset password');
+        return;
+      }
+
+      // Also update localStorage for consistency
+      const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
+      const accountIndex = accounts.findIndex((acc: any) => acc.email.toLowerCase() === verifiedEmail.toLowerCase());
+      if (accountIndex !== -1) {
+        accounts[accountIndex].password = newPassword;
+        localStorage.setItem('userAccounts', JSON.stringify(accounts));
+      }
 
       // Success - redirect to login
       alert('Password successfully reset! You can now log in with your new password.');
       router.push('/login');
+    } catch {
+      setPasswordError(true);
+      setErrorMessage('Network error. Please try again.');
     }
   };
 
@@ -116,7 +136,7 @@ export default function ForgotPasswordPage() {
           onClick={() => router.push('/start')} 
           className="flex items-center gap-3 cursor-pointer"
         >
-          <div className="text-3xl">🔐</div>
+          <Image src="/encodex-lock.svg" alt="Encodex" width={36} height={36} />
           <span className="text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
@@ -183,7 +203,7 @@ export default function ForgotPasswordPage() {
               <div className="mt-10 flex justify-end">
                 <button
                   onClick={handleVerify}
-                  className="px-8 py-3.5 bg-gradient-to-r from-teal-500 to-blue-500 hover:from-teal-400 hover:to-blue-400 rounded-xl text-white font-semibold text-[15px] transition-all shadow-lg hover:shadow-xl"
+                  className="px-8 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 rounded-xl text-white font-semibold text-[15px] transition-all shadow-lg hover:shadow-xl"
                 >
                   Verify →
                 </button>
@@ -205,7 +225,7 @@ export default function ForgotPasswordPage() {
                 Create new password
               </h1>
               <p className="text-center text-gray-400 mb-10">
-                Enter your new password for <span className="text-teal-400">{verifiedEmail}</span>
+                Enter your new password for <span className="text-orange-400">{verifiedEmail}</span>
               </p>
 
               {errorMessage && (
@@ -279,7 +299,7 @@ export default function ForgotPasswordPage() {
               <div className="mt-10 flex justify-end">
                 <button
                   onClick={handleResetPassword}
-                  className="px-8 py-3.5 bg-gradient-to-r from-teal-500 to-blue-500 hover:from-teal-400 hover:to-blue-400 rounded-xl text-white font-semibold text-[15px] transition-all shadow-lg hover:shadow-xl"
+                  className="px-8 py-3.5 bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-400 hover:to-orange-500 rounded-xl text-white font-semibold text-[15px] transition-all shadow-lg hover:shadow-xl"
                 >
                   Reset password →
                 </button>

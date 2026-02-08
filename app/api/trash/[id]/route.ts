@@ -30,8 +30,6 @@ export async function DELETE(
     // Get file ID from URL params (Next.js 16+ requires await)
     const { id } = await params;
 
-    console.log(`🔥 [PERMANENT_DELETE] Attempting to permanently delete file ${id} for ${userEmail}`);
-
     // Verify file exists, is in trash, and is owned by user (case-insensitive)
     const file = await prisma.file.findFirst({
       where: {
@@ -55,38 +53,28 @@ export async function DELETE(
     await prisma.share.deleteMany({
       where: { fileId: id },
     });
-    console.log(`✅ [PERMANENT_DELETE] Deleted all shares for file ${id}`);
-
     // Delete all temp deleted records
     await prisma.tempDeletedShare.deleteMany({
       where: { fileId: id },
     });
-    console.log(`✅ [PERMANENT_DELETE] Deleted all temp_deleted records for file ${id}`);
-
     // Delete all hidden share records
     await prisma.hiddenShare.deleteMany({
       where: { fileId: id },
     });
-    console.log(`✅ [PERMANENT_DELETE] Deleted all hidden_share records for file ${id}`);
-
     // Delete all receiver trashed records
     await prisma.receiverTrashedShare.deleteMany({
       where: { fileId: id },
     });
-    console.log(`✅ [PERMANENT_DELETE] Deleted all receiver_trashed records for file ${id}`);
-
     // Finally, delete the file itself permanently
     await prisma.file.delete({
       where: { id },
     });
-    console.log(`✅ [PERMANENT_DELETE] File ${id} permanently deleted`);
-
     return NextResponse.json({
       success: true,
       message: 'File permanently deleted',
     });
   } catch (error) {
-    console.error('❌ [PERMANENT_DELETE] Error permanently deleting file:', error);
+    
     return NextResponse.json(
       { error: 'Failed to permanently delete file' },
       { status: 500 }

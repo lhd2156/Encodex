@@ -41,7 +41,7 @@ export async function GET(req: NextRequest) {
       data: hiddenShares,
     });
   } catch (error) {
-    console.error('❌ [HIDDEN_SHARES] Error fetching hidden shares:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch hidden shares' },
       { status: 500 }
@@ -103,14 +103,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [HIDDEN_SHARES] Hidden share ${shareId || fileId} for ${userEmail}`);
-
     return NextResponse.json({
       success: true,
       data: hiddenShare,
     });
   } catch (error) {
-    console.error('❌ [HIDDEN_SHARES] Error hiding share:', error);
+    
     return NextResponse.json(
       { error: 'Failed to hide share' },
       { status: 500 }
@@ -160,14 +158,12 @@ export async function DELETE(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [HIDDEN_SHARES] Removed ${result.count} hidden shares for ${userEmail}`);
-
     return NextResponse.json({
       success: true,
       count: result.count,
     });
   } catch (error) {
-    console.error('❌ [HIDDEN_SHARES] Error removing hidden shares:', error);
+    
     return NextResponse.json(
       { error: 'Failed to remove hidden shares' },
       { status: 500 }

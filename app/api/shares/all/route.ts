@@ -45,16 +45,14 @@ export async function DELETE(req: NextRequest) {
     if (!file) {
       // File might not exist in DB yet (optimistic) or user doesn't own it
       // Still try to delete shares if any exist for this fileId
-      console.log(`⚠️ [UNSHARE_ALL] File ${fileId} not found, attempting direct share cleanup`);
-    }
+      }
 
     let fileIds = [fileId];
 
     // If recursive, get all descendants
     if (recursive) {
       fileIds = await getDescendantFileIds(fileId);
-      console.log(`🔍 [UNSHARE_ALL] Found ${fileIds.length} files to unshare (recursive)`);
-    }
+      }
 
     // Get affected recipients for cleanup
     const affectedShares = await prisma.share.findMany({
@@ -100,15 +98,13 @@ export async function DELETE(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [UNSHARE_ALL] Deleted ${result.count} shares for ${fileIds.length} files`);
-
     return NextResponse.json({
       success: true,
       count: result.count,
       affectedRecipients: affectedRecipients.length,
     });
   } catch (error) {
-    console.error('❌ [UNSHARE_ALL] Error:', error);
+    
     return NextResponse.json(
       { error: 'Failed to delete all shares' },
       { status: 500 }

@@ -12,34 +12,25 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
 
   async function unlock(password: string) {
     try {
-      // Get current user's email from session
       const session = getSession()
       if (!session) {
         throw new Error('No active session')
       }
 
-      // Get or create persistent salt for this user
       const userSalt = getUserSalt(session.userEmail)
-      console.log('🔑 Using salt for user:', session.userEmail)
 
-      // Verify password if hash exists
       const isValid = await verifyPassword(session.userEmail, password)
       if (!isValid) {
         throw new Error('Invalid password')
       }
 
-      // Derive master key from password and salt
       const key = await deriveMasterKey(password, userSalt as unknown as BufferSource)
 
-      // Store password hash if not already stored
       await storePasswordHash(session.userEmail, password)
 
       setSalt(userSalt)
       setMasterKey(key)
-      
-      console.log('✅ Vault unlocked successfully')
     } catch (error) {
-      console.error('❌ Failed to unlock vault:', error)
       throw error
     }
   }
@@ -47,7 +38,6 @@ export function VaultProvider({ children }: { children: React.ReactNode }) {
   function lock() {
     setMasterKey(null)
     setSalt(null)
-    console.log('🔒 Vault locked')
   }
 
   const value: VaultContextValue = {

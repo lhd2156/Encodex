@@ -12,7 +12,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params; // ✅ FIX: Await params in Next.js 16+
+    const { id } = await params; // Await params in Next.js 16+
     
     const user = await getUserFromRequest(req);
     if (!user) {
@@ -48,7 +48,6 @@ export async function GET(
     });
 
   } catch (error) {
-    console.error('Get file error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -59,7 +58,7 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params; // ✅ FIX: Await params in Next.js 16+
+    const { id } = await params; // Await params in Next.js 16+
     
     const user = await getUserFromRequest(req);
     if (!user) {
@@ -92,7 +91,6 @@ export async function DELETE(
     });
 
   } catch (error) {
-    console.error('Delete file error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -103,7 +101,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params; // ✅ FIX: Await params in Next.js 16+
+    const { id } = await params; // Await params in Next.js 16+
     
     const user = await getUserFromRequest(req);
     if (!user) {
@@ -146,7 +144,6 @@ export async function PATCH(
     });
 
   } catch (error) {
-    console.error('Update file error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

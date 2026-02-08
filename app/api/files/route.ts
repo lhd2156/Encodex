@@ -10,16 +10,12 @@ export async function GET(req: NextRequest) {
     // Authenticate user
     const user = await getUserFromRequest(req);
     if (!user) {
-      console.error('❌ [FILES API] No user from request - unauthorized');
+      
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
       );
     }
-
-    console.log(`📋 [FILES API] ==========================================`);
-    console.log(`📋 [FILES API] User requesting files: ${user.email} (userId: ${user.userId})`);
-    console.log(`📋 [FILES API] Query filter: { userId: "${user.userId}", isDeleted: false }`);
 
     // Get all files for user (excluding deleted ones by default)
     const files = await prisma.file.findMany({
@@ -32,18 +28,12 @@ export async function GET(req: NextRequest) {
       }
     });
     
-    console.log(`📋 [FILES API] Found ${files.length} files for userId: ${user.userId}`);
-    files.forEach((f, i) => {
-      const ownerMatch = f.userId === user.userId ? '✓' : '❌ MISMATCH!';
-      console.log(`   ${i + 1}. "${f.name}" | owner: ${f.ownerEmail} | userId: ${f.userId} ${ownerMatch}`);
-    });
-    console.log(`📋 [FILES API] ==========================================`);
-
-    // ✅ FIX: Fetch uploader names for files uploaded to shared folders
+    // Fetch uploader names for files uploaded to shared folders
     // ownerName stores uploader's email when someone uploads to a shared folder
+    // Only treat it as an email if it contains @ (otherwise it's owner's display name)
     const uploaderEmails = new Set<string>();
     files.forEach(file => {
-      if (file.ownerName && file.ownerName !== file.ownerEmail) {
+      if (file.ownerName && file.ownerName.includes('@') && file.ownerName !== file.ownerEmail) {
         uploaderEmails.add(file.ownerName.toLowerCase());
       }
     });
@@ -65,8 +55,9 @@ export async function GET(req: NextRequest) {
 
     // Convert BigInt to string and Buffers to arrays (for JSON serialization)
     const filesFormatted = files.map(file => {
-      const uploaderEmail = file.ownerName || null;
-      // ✅ FIX: Format as "FirstName (email)"
+      // Only treat ownerName as uploader email if it contains @ (otherwise it's owner's display name)
+      const uploaderEmail = (file.ownerName && file.ownerName.includes('@')) ? file.ownerName : null;
+      // Format as "FirstName (email)"
       const uploaderUserData = uploaderEmail
         ? uploaderUsers.find(u => u.email.toLowerCase() === uploaderEmail.toLowerCase())
         : null;
@@ -86,7 +77,7 @@ export async function GET(req: NextRequest) {
         owner: file.ownerEmail,
         ownerEmail: file.ownerEmail,
         ownerName: file.ownerName || undefined,  // Who uploaded (for shared folder uploads) - EMAIL
-        uploaderName: uploaderName || undefined,  // ✅ NEW: Live display name of uploader
+        uploaderName: uploaderName || undefined,  // Live display name of uploader
         createdAt: file.createdAt.toISOString(),
         updatedAt: file.updatedAt.toISOString()
       };
@@ -98,7 +89,7 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('List files error:', error);
+    
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

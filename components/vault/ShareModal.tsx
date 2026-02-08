@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 
 // Helper to format email display: capitalize first letter only if not a number
 const formatEmailDisplay = (email: string): string => {
@@ -20,7 +21,7 @@ type ShareModalProps = {
   onClose: () => void;
   currentUserName: string;
   currentUserEmail: string;
-  currentUserProfileImage?: string | null; // ✅ Add profile image support
+  currentUserProfileImage?: string | null; // Add profile image support
   fileName: string;
   fileId?: string | null;
   currentSharedWith?: string[];
@@ -66,7 +67,7 @@ export default function ShareModal({
       return;
     }
 
-    // ✅ FIX: Check if already shared BEFORE making API call
+    // Check if already shared BEFORE making API call
     const normalizedInput = recipientEmail.toLowerCase().trim();
     if (currentSharedWith && currentSharedWith.some(email => email.toLowerCase() === normalizedInput)) {
       setError('Already shared with this user. Use Unshare to remove access.');
@@ -123,7 +124,7 @@ export default function ShareModal({
                 className="w-10 h-10 rounded-full object-cover"
               />
             ) : (
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-orange-400 to-red-500 flex items-center justify-center text-white font-bold text-lg">
                 {currentUserName.charAt(0).toUpperCase()}
               </div>
             )}
@@ -151,12 +152,12 @@ export default function ShareModal({
 
         {/* Success Message */}
         {success && (
-          <div className={`mb-6 p-4 ${isUnshareSuccess ? 'bg-orange-500/20 border-orange-400/50' : 'bg-teal-500/20 border-teal-400/50'} rounded-lg border animate-fade-in`}>
+          <div className={`mb-6 p-4 ${isUnshareSuccess ? 'bg-orange-500/20 border-orange-400/50' : 'bg-orange-500/20 border-orange-400/50'} rounded-lg border animate-fade-in`}>
             <div className="flex items-center gap-3">
-              <svg className={`w-6 h-6 ${isUnshareSuccess ? 'text-orange-400' : 'text-teal-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`w-6 h-6 ${isUnshareSuccess ? 'text-orange-400' : 'text-orange-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
-              <p className={`${isUnshareSuccess ? 'text-orange-400' : 'text-teal-400'} font-semibold`}>
+              <p className={`${isUnshareSuccess ? 'text-orange-400' : 'text-orange-400'} font-semibold`}>
                 {isUnshareSuccess ? 'File unshared successfully!' : 'File shared successfully!'}
               </p>
             </div>
@@ -182,7 +183,7 @@ export default function ShareModal({
                   setError('');
                 }}
                 placeholder="Enter user's email address"
-                className="w-full px-4 py-3 bg-blue-950/50 border border-blue-700/30 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-teal-400 transition-colors"
+                className="w-full px-4 py-3 bg-blue-950/50 border border-blue-700/30 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-orange-400 transition-colors"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleShare();
@@ -196,21 +197,25 @@ export default function ShareModal({
 
             {/* Info Box */}
             <div className="mb-6 p-4 bg-blue-950/30 rounded-lg border border-blue-700/20">
-              <p className="text-sm text-gray-300">
-                📤 When you share this file, it will appear in the recipient's <span className="text-teal-400 font-semibold">"Shared"</span> section.
+              <p className="text-sm text-gray-300 flex items-start gap-2">
+                <Image src="/encodex-share.svg" alt="Share" width={16} height={16} className="flex-shrink-0 mt-0.5" />
+                <span>When you share this file, it will appear in the recipient's <span className="text-orange-400 font-semibold">"Shared"</span> section.</span>
               </p>
-              <p className="text-sm text-gray-300 mt-2">
-                👤 The file will show your name as the owner.
+              <p className="text-sm text-gray-300 mt-2 flex items-start gap-2">
+                <svg className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+                <span>The file will show your name as the owner.</span>
               </p>
             </div>
           </>
         )}
 
         {/* Action Buttons */}
-        <div className="flex gap-3 justify-end">
+        <div className="flex gap-3 justify-end mt-6">
           <button
             onClick={handleClose}
-            className="px-6 py-2.5 rounded-lg bg-gray-500/20 hover:bg-gray-500/30 text-gray-300 font-semibold transition-colors"
+            className="px-8 py-3 rounded-lg bg-gray-600/30 hover:bg-gray-600/50 text-gray-300 font-semibold transition-colors"
           >
             {success ? 'Close' : 'Cancel'}
           </button>
@@ -235,7 +240,7 @@ export default function ShareModal({
                   setError('Failed to unshare.');
                 }
               }}
-              className="px-6 py-2.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold transition-colors"
+              className="px-8 py-3 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold transition-colors"
             >
               Unshare
             </button>
@@ -244,7 +249,7 @@ export default function ShareModal({
           {!success && (
             <button
               onClick={handleShare}
-              className="px-6 py-2.5 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-400 font-semibold transition-colors"
+              className="px-8 py-3 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-semibold transition-colors"
             >
               Share
             </button>

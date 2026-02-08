@@ -78,7 +78,7 @@ export default function FilterBar({
             onClick={() => setOpenDropdown(openDropdown === 'type' ? null : 'type')}
             className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-2 transition-colors min-w-[120px] justify-between ${
               activeFilters.type !== 'All'
-                ? 'bg-teal-500/20 text-teal-400 border-teal-400/50'
+                ? 'bg-orange-500/20 text-orange-400 border-orange-400/50'
                 : 'bg-transparent text-white border-gray-600 hover:bg-blue-800/20'
             }`}
           >
@@ -115,7 +115,7 @@ export default function FilterBar({
             onClick={() => setOpenDropdown(openDropdown === 'modified' ? null : 'modified')}
             className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-2 transition-colors min-w-[140px] justify-between ${
               activeFilters.modified !== 'Any time'
-                ? 'bg-teal-500/20 text-teal-400 border-teal-400/50'
+                ? 'bg-orange-500/20 text-orange-400 border-orange-400/50'
                 : 'bg-transparent text-white border-gray-600 hover:bg-blue-800/20'
             }`}
           >
@@ -149,7 +149,7 @@ export default function FilterBar({
         {hasActiveFilters && (
           <button
             onClick={clearFilters}
-            className="px-4 py-2 text-sm font-medium text-teal-400 hover:text-teal-300 hover:underline transition-colors"
+            className="px-4 py-2 text-sm font-medium text-orange-400 hover:text-orange-300 hover:underline transition-colors"
           >
             Clear filters
           </button>
@@ -165,7 +165,7 @@ export default function FilterBar({
               onClick={onSelectAll}
               className="px-4 py-2 rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 text-sm font-semibold transition-colors flex items-center gap-2"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
               Select all
@@ -180,7 +180,7 @@ export default function FilterBar({
                   onClick={onSelectAll}
                   className="px-4 py-2 rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 text-sm font-semibold transition-colors flex items-center gap-2"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                   </svg>
                   Select all
@@ -189,9 +189,9 @@ export default function FilterBar({
               {onRecoverAll && (
                 <button
                   onClick={onRecoverAll}
-                  className="px-4 py-2 rounded-lg bg-teal-500/20 hover:bg-teal-500/30 text-teal-400 text-sm font-semibold transition-colors flex items-center gap-2"
+                  className="px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 text-sm font-semibold transition-colors flex items-center gap-2"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h12a4 4 0 110 8H7M3 10l4-4M3 10l4 4" />
                   </svg>
                   Recover all
@@ -202,7 +202,7 @@ export default function FilterBar({
                   onClick={onDeleteAll}
                   className="px-4 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm font-semibold transition-colors flex items-center gap-2"
                 >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
                   Delete all

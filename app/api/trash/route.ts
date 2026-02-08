@@ -73,7 +73,7 @@ export async function GET(req: NextRequest) {
       data: formattedData,
     });
   } catch (error) {
-    console.error('❌ [TRASH] Error fetching trash:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch trash' },
       { status: 500 }

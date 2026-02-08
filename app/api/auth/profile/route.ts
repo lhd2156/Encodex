@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('❌ [PROFILE] Error fetching profile:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch profile' },
       { status: 500 }
@@ -85,8 +85,6 @@ export async function PATCH(req: NextRequest) {
 
     const fullName = lastName ? `${firstName} ${lastName}` : firstName;
 
-    console.log(`👤 [PROFILE] Updating name for ${userEmail} to "${fullName}"`);
-
     // 1. Find user with case-insensitive email match
     const existingUser = await prisma.user.findFirst({
       where: {
@@ -98,7 +96,7 @@ export async function PATCH(req: NextRequest) {
     });
 
     if (!existingUser) {
-      console.error(`❌ [PROFILE] User not found for email: ${userEmail}`);
+      
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
@@ -111,23 +109,23 @@ export async function PATCH(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [PROFILE] Updated user record for ${userEmail} (ID: ${existingUser.id})`);
-
-    // 3. Update ownerName on all files owned by this user
-    // This ensures shared files show the correct owner name to recipients
+    // 3. Update ownerName on files owned by this user ONLY where ownerName is null or is a display name
+    // DON'T overwrite ownerName if it contains @ (it stores uploader's email for shared folder uploads)
     const filesUpdated = await prisma.file.updateMany({
       where: {
         ownerEmail: {
           equals: userEmail,
           mode: 'insensitive',
         },
+        OR: [
+          { ownerName: null },
+          { ownerName: { not: { contains: '@' } } }
+        ]
       },
       data: {
         ownerName: fullName,
       },
     });
-
-    console.log(`✅ [PROFILE] Updated ownerName on ${filesUpdated.count} files`);
 
     return NextResponse.json({
       success: true,
@@ -140,7 +138,7 @@ export async function PATCH(req: NextRequest) {
       filesUpdated: filesUpdated.count,
     });
   } catch (error) {
-    console.error('❌ [PROFILE] Error updating profile:', error);
+    
     return NextResponse.json(
       { error: 'Failed to update profile' },
       { status: 500 }

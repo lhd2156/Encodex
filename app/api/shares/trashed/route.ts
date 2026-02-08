@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
       data: trashedShares,
     });
   } catch (error) {
-    console.error('❌ [RECEIVER_TRASH] Error fetching trashed shares:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch trashed shares' },
       { status: 500 }
@@ -105,14 +105,12 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [RECEIVER_TRASH] Trashed share ${fileId} for ${userEmail}`);
-
     return NextResponse.json({
       success: true,
       data: trashedShare,
     });
   } catch (error) {
-    console.error('❌ [RECEIVER_TRASH] Error trashing share:', error);
+    
     return NextResponse.json(
       { error: 'Failed to trash share' },
       { status: 500 }
@@ -161,14 +159,12 @@ export async function DELETE(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [RECEIVER_TRASH] Restored share ${fileId} for ${userEmail}`);
-
     return NextResponse.json({
       success: true,
       message: 'Share restored from trash',
     });
   } catch (error) {
-    console.error('❌ [RECEIVER_TRASH] Error restoring share:', error);
+    
     return NextResponse.json(
       { error: 'Failed to restore share' },
       { status: 500 }

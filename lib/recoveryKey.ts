@@ -16,7 +16,6 @@ export function generateRecoveryKey(): string {
     .map(byte => chars[byte % chars.length])
     .join('');
   
-  console.log('🔑 Generated new recovery key');
   return key;
 }
 
@@ -25,19 +24,18 @@ export function generateRecoveryKey(): string {
  * Called during registration
  */
 export function storeRecoveryKey(userEmail: string, recoveryKey: string): void {
-  // ✅ CRITICAL: Always use lowercase email for storage key
+  // Always use lowercase email for storage key
   const normalizedEmail = userEmail.toLowerCase();
   const keyStorageKey = `recovery_key_${normalizedEmail}`;
   localStorage.setItem(keyStorageKey, recoveryKey);
-  console.log('💾 Stored recovery key for:', normalizedEmail);
-}
+  }
 
 /**
  * Retrieves the recovery key for a user
  * Returns null if no key exists
  */
 export function getRecoveryKey(userEmail: string): string | null {
-  // ✅ CRITICAL: Always use lowercase email for lookup
+  // Always use lowercase email for lookup
   const normalizedEmail = userEmail.toLowerCase();
   const keyStorageKey = `recovery_key_${normalizedEmail}`;
   
@@ -53,8 +51,7 @@ export function getRecoveryKey(userEmail: string): string | null {
     if (key) {
       localStorage.setItem(keyStorageKey, key);
       localStorage.removeItem(originalKey);
-      console.log('🔄 Migrated recovery key to normalized email:', normalizedEmail);
-    }
+      }
   }
   
   return key;
@@ -77,10 +74,8 @@ export function ensureRecoveryKeyExists(userEmail: string): string {
   if (!key) {
     key = generateRecoveryKey();
     storeRecoveryKey(userEmail, key);
-    console.log('✅ Created recovery key during registration for:', userEmail);
-  } else {
-    console.log('ℹ️ Recovery key already exists for:', userEmail);
-  }
+    } else {
+    }
   
   return key;
 }
@@ -117,8 +112,7 @@ ENCODEX - Secure Cloud Storage
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
   
-  console.log('📥 Recovery key downloaded for:', userEmail);
-}
+  }
 
 /**
  * Validates a recovery key format

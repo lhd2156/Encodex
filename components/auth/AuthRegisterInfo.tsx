@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 
 const slides = [
   {
@@ -11,7 +12,8 @@ const slides = [
     ),
     description:
       "Use a password you don't use anywhere else to keep your account secure.",
-    link: "Read more about creating a strong password",
+    hint: "A mix of letters, numbers, and symbols works best.",
+    image: "/auth-password-security.svg",
   },
   {
     title: (
@@ -21,7 +23,8 @@ const slides = [
       </>
     ),
     description: "",
-    link: "Read more about zero-knowledge encryption",
+    hint: "If you lose both, your data cannot be recovered.",
+    image: "/auth-vault-key.svg",
   },
 ];
 
@@ -68,8 +71,10 @@ export default function AuthRegisterInfo() {
       onMouseLeave={startAutoSlide}
     >
       <div className="relative w-[352px] text-center">
-        {/* Illustration placeholder - matching AuthInfo size exactly */}
-        <div className="mx-auto mb-10 h-32 w-32 rounded-xl bg-neutral-700 opacity-80" />
+        {/* Illustration - dynamic based on slide */}
+        <div className="mx-auto mb-10">
+          <Image src={slide.image} alt="Security" width={300} height={200} />
+        </div>
 
         {/* SLIDE */}
         <div
@@ -101,9 +106,9 @@ export default function AuthRegisterInfo() {
             </p>
           )}
 
-          <span className="text-sm text-neutral-400 cursor-pointer underline hover:text-neutral-300 transition-colors">
-            {slide.link}
-          </span>
+          <p className="text-sm text-neutral-500">
+            {slide.hint}
+          </p>
         </div>
 
         {/* LEFT ARROW */}

@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
             createdAt: true,
             parentFolderId: true,
             ownerEmail: true,
-            ownerName: true,  // ✅ Include uploader's email (set when someone uploads to shared folder)
+            ownerName: true,  // Include uploader's email (set when someone uploads to shared folder)
             userId: true,
             // Join with User to get owner's name
             user: {
@@ -59,7 +59,10 @@ export async function GET(req: NextRequest) {
     const uploaderEmails = new Set<string>();
     shares.forEach(share => {
       // file.ownerName stores uploader's email when someone uploads to a shared folder
-      if (share.file.ownerName && share.file.ownerName !== share.file.ownerEmail) {
+      // Only treat it as an email if it contains @ (otherwise it's the owner's display name)
+      if (share.file.ownerName && 
+          share.file.ownerName.includes('@') && 
+          share.file.ownerName !== share.file.ownerEmail) {
         uploaderEmails.add(share.file.ownerName.toLowerCase());
       }
     });
@@ -87,9 +90,12 @@ export async function GET(req: NextRequest) {
       
       // uploaderEmail = who uploaded the file (if different from owner)
       // This is stored in file.ownerName when someone uploads to a shared folder
-      const uploaderEmail = share.file.ownerName || null;
+      // Only treat it as an uploader email if it contains @ (otherwise it's owner's display name)
+      const uploaderEmail = (share.file.ownerName && share.file.ownerName.includes('@')) 
+        ? share.file.ownerName 
+        : null;
       
-      // ✅ FIX: Get uploader's live display name in "FirstName (email)" format
+      // Get uploader's live display name in "FirstName (email)" format
       const uploaderUserData = uploaderEmail 
         ? uploaderUsers.find(u => u.email.toLowerCase() === uploaderEmail.toLowerCase())
         : null;
@@ -110,7 +116,7 @@ export async function GET(req: NextRequest) {
           ownerEmail: share.file.ownerEmail,
           ownerName: ownerDisplayName, // Owner's display name
           uploaderEmail, // Email of who uploaded (if different from owner)
-          uploaderName, // ✅ NEW: Live display name of uploader
+          uploaderName, // Live display name of uploader
         },
       };
     });
@@ -120,7 +126,7 @@ export async function GET(req: NextRequest) {
       data: transformedShares,
     });
   } catch (error) {
-    console.error('❌ [SHARES] Error:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch shares' },
       { status: 500 }
@@ -166,8 +172,6 @@ export async function POST(req: NextRequest) {
     // Normalize recipient email to lowercase for case-insensitive comparison
     const recipientEmail = rawRecipientEmail.toLowerCase();
 
-    console.log(`📤 [SHARE] Attempting to share file ${fileId} (${fileName}) from ${userEmail} to ${recipientEmail}`);
-
     // Check if file exists and user owns it (case-insensitive email comparison)
     const file = await prisma.file.findFirst({
       where: {
@@ -180,16 +184,16 @@ export async function POST(req: NextRequest) {
     });
 
     if (!file) {
-      // ✅ Debug: check if file exists at all
+      // Debug: check if file exists at all
       const fileAny = await prisma.file.findUnique({
         where: { id: fileId },
         select: { id: true, name: true, ownerEmail: true }
       });
       
       if (fileAny) {
-        console.error(`❌ [SHARE] File ${fileId} exists but owned by ${fileAny.ownerEmail}, not ${userEmail}`);
+        
       } else {
-        console.error(`❌ [SHARE] File ${fileId} does not exist in database`);
+        
       }
       
       return NextResponse.json(
@@ -197,8 +201,6 @@ export async function POST(req: NextRequest) {
         { status: 404 }
       );
     }
-
-    console.log(`✅ [SHARE] File found: ${file.name} (${file.id}), owner: ${file.ownerEmail}`);
 
     // Check if already shared with this recipient (case-insensitive)
     const existingShare = await prisma.share.findFirst({
@@ -212,14 +214,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (existingShare) {
-      console.log(`⚠️ [SHARE] File ${fileId} already shared with ${recipientEmail}`);
       return NextResponse.json({
         success: false,
         message: 'File already shared with this user',
       });
     }
 
-    // ✅ Check if recipient has this in their trash (prevent re-share before permanent delete)
+    // Check if recipient has this in their trash (prevent re-share before permanent delete)
     const recipientTrashed = await prisma.receiverTrashedShare.findFirst({
       where: {
         fileId,
@@ -231,14 +232,13 @@ export async function POST(req: NextRequest) {
     });
 
     if (recipientTrashed) {
-      console.log(`🚫 [SHARE] Blocked - recipient has file in trash`);
       return NextResponse.json({
         success: false,
         message: 'Recipient has this file in trash. They must permanently delete it first.',
       }, { status: 400 });
     }
 
-    // ✅ Clear recipient's metadata from separate tables before sharing (re-share cleanup)
+    // Clear recipient's metadata from separate tables before sharing (re-share cleanup)
     try {
       // Clear temp_deleted marker for this file (case-insensitive)
       const deletedTemp = await prisma.tempDeletedShare.deleteMany({
@@ -275,14 +275,13 @@ export async function POST(req: NextRequest) {
 
       const totalCleared = deletedTemp.count + deletedHidden.count + deletedTrashed.count;
       if (totalCleared > 0) {
-        console.log(`🧹 [SHARE] Cleared ${totalCleared} metadata record(s) for re-share of file ${fileId}`);
-      }
+        }
     } catch (error) {
-      console.error('❌ [SHARE] Failed to clear recipient metadata:', error);
+      
       // Continue anyway - this is cleanup, not critical
     }
 
-    // ✅ FIX: Fetch recipient's actual name from User table for dynamic display
+    // Fetch recipient's actual name from User table for dynamic display
     let recipientDisplayName = recipientEmail;
     try {
       const recipientUser = await prisma.user.findFirst({
@@ -301,8 +300,7 @@ export async function POST(req: NextRequest) {
         recipientDisplayName = `${recipientUser.firstName} ${recipientUser.lastName}`.trim() || recipientEmail;
       }
     } catch (e) {
-      console.warn('⚠️ [SHARE] Could not fetch recipient name:', e);
-    }
+      }
 
     // Create the share
     // Note: Don't use both fileId AND file.connect - just use fileId (Prisma handles the relation)
@@ -313,15 +311,13 @@ export async function POST(req: NextRequest) {
         fileSize: fileSize || file.size,
         fileType: fileType || file.type || 'file', // Default to 'file' if not provided
         recipientEmail,
-        recipientName: recipientDisplayName, // ✅ Store the actual name
+        recipientName: recipientDisplayName, // Store the actual name
         parentFolderId,
         sharedAt: new Date(),
       },
     });
 
-    console.log(`✅ [SHARE] Created share ${share.id} for file ${fileId} with ${recipientEmail}`);
-
-    // ✅ FIX: If parent folder is in receiver's trash, auto-add this item to their trash too
+    // If parent folder is in receiver's trash, auto-add this item to their trash too
     if (parentFolderId) {
       try {
         const parentInReceiverTrash = await prisma.receiverTrashedShare.findFirst({
@@ -350,10 +346,9 @@ export async function POST(req: NextRequest) {
               recipientEmail,
             },
           });
-          console.log(`🗑️ [SHARE] Parent folder in receiver's trash - auto-adding new item to their trash`);
-        }
+          }
       } catch (e) {
-        console.error('❌ [SHARE] Failed to check/set receiver trash for new share:', e);
+        
         // Continue anyway - this is not critical
       }
     }
@@ -367,7 +362,7 @@ export async function POST(req: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('❌ [SHARE] Error creating share:', error);
+    
     return NextResponse.json(
       { error: 'Failed to create share' },
       { status: 500 }
@@ -414,14 +409,12 @@ export async function PATCH(req: NextRequest) {
       data: updateData,
     });
 
-    console.log(`✅ [SHARE] Updated ${result.count} shares for file ${fileId}`);
-
     return NextResponse.json({
       success: true,
       count: result.count,
     });
   } catch (error) {
-    console.error('❌ [SHARE] Error updating shares:', error);
+    
     return NextResponse.json(
       { error: 'Failed to update shares' },
       { status: 500 }
@@ -483,7 +476,7 @@ export async function DELETE(req: NextRequest) {
     const isOwner = file.ownerEmail.toLowerCase() === userEmail.toLowerCase();
     const isRecipient = recipientEmail.toLowerCase() === userEmail.toLowerCase();
     
-    // ✅ Allow: Owner can unshare anyone, Recipient can unshare themselves
+    // Allow: Owner can unshare anyone, Recipient can unshare themselves
     if (!isOwner && !isRecipient) {
       return NextResponse.json(
         { error: 'Unauthorized - only owner or recipient can remove share' },
@@ -510,14 +503,12 @@ export async function DELETE(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [UNSHARE] Deleted ${result.count} shares from ${recipientEmail}`);
-
     return NextResponse.json({
       success: true,
       count: result.count,
     });
   } catch (error) {
-    console.error('❌ [UNSHARE] Error:', error);
+    
     return NextResponse.json(
       { error: 'Failed to delete shares' },
       { status: 500 }

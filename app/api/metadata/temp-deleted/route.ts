@@ -1,11 +1,10 @@
-// FILE LOCATION: app/api/metadata/temp-deleted/route.ts
-// Manage temp_deleted_shares metadata (sender moves file to trash)
+// Manage temp-deleted metadata (files sender trashed, temporarily hidden from receivers)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getUserFromRequest } from '@/lib/auth';
 
-// GET temp deleted shares for current user
+// GET temp-deleted files for current user
 export async function GET(req: NextRequest) {
   try {
     const user = await getUserFromRequest(req);
@@ -13,26 +12,24 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Get user's metadata
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { tempDeletedShares: true }
+    const tempDeleted = await prisma.tempDeletedShare.findMany({
+      where: { recipientEmail: user.email },
+      select: { fileId: true }
     });
 
-    const tempDeleted = userData?.tempDeletedShares || [];
+    const fileIds = tempDeleted.map(t => t.fileId);
 
     return NextResponse.json({
       success: true,
-      fileIds: tempDeleted
+      fileIds
     });
 
   } catch (error) {
-    console.error('Get temp deleted error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// POST - Add file IDs to temp deleted list
+// POST - mark a file as temp-deleted
 export async function POST(req: NextRequest) {
   try {
     const user = await getUserFromRequest(req);
@@ -40,41 +37,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { fileIds } = await req.json();
+    const { fileId } = await req.json();
 
-    if (!Array.isArray(fileIds)) {
-      return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
+    if (!fileId) {
+      return NextResponse.json({ error: 'fileId is required' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { tempDeletedShares: true }
+    // Check if already exists
+    const existing = await prisma.tempDeletedShare.findFirst({
+      where: { fileId, recipientEmail: user.email }
     });
 
-    const currentList = userData?.tempDeletedShares || [];
-    
-    // Add new IDs (deduplicate)
-    const updated = [...new Set([...currentList, ...fileIds])];
+    if (!existing) {
+      await prisma.tempDeletedShare.create({
+        data: { fileId, recipientEmail: user.email }
+      });
+    }
 
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { tempDeletedShares: updated }
-    });
-
-    return NextResponse.json({
-      success: true,
-      fileIds: updated
-    });
+    return NextResponse.json({ success: true });
 
   } catch (error) {
-    console.error('Add temp deleted error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// DELETE - Remove file IDs from temp deleted list
+// DELETE - remove file from temp-deleted
 export async function DELETE(req: NextRequest) {
   try {
     const user = await getUserFromRequest(req);
@@ -82,57 +69,58 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { fileIds } = await req.json();
+    const { fileId } = await req.json();
 
-    if (!Array.isArray(fileIds)) {
-      return NextResponse.json({ error: 'fileIds must be an array' }, { status: 400 });
+    if (!fileId) {
+      return NextResponse.json({ error: 'fileId is required' }, { status: 400 });
     }
 
-    // Get current list
-    const userData = await prisma.user.findUnique({
-      where: { id: user.userId },
-      select: { tempDeletedShares: true }
+    await prisma.tempDeletedShare.deleteMany({
+      where: { fileId, recipientEmail: user.email }
     });
 
-    const currentList = userData?.tempDeletedShares || [];
-    
-    // Remove specified IDs
-    const updated = currentList.filter(id => !fileIds.includes(id));
-
-    // Update database
-    await prisma.user.update({
-      where: { id: user.userId },
-      data: { tempDeletedShares: updated }
-    });
-
-    return NextResponse.json({
-      success: true,
-      fileIds: updated
-    });
+    return NextResponse.json({ success: true });
 
   } catch (error) {
-    console.error('Remove temp deleted error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// ADD batch update endpoint
+// PATCH - toggle temp-deleted status
 export async function PATCH(req: NextRequest) {
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (!token) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  try {
+    const user = await getUserFromRequest(req);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  const userEmail = await getUserEmailFromToken(token);
-  if (!userEmail) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    const { fileId, tempDeleted } = await req.json();
 
-  const { fileIds, updates } = await req.json();
+    if (!fileId) {
+      return NextResponse.json({ error: 'fileId is required' }, { status: 400 });
+    }
 
-  await prisma.file.updateMany({
-    where: {
-      id: { in: fileIds },
-      ownerEmail: userEmail,
-    },
-    data: updates,
-  });
+    if (tempDeleted) {
+      // Mark as temp-deleted
+      const existing = await prisma.tempDeletedShare.findFirst({
+        where: { fileId, recipientEmail: user.email }
+      });
 
-  return NextResponse.json({ success: true });
+      if (!existing) {
+        await prisma.tempDeletedShare.create({
+          data: { fileId, recipientEmail: user.email }
+        });
+      }
+    } else {
+      // Remove from temp-deleted
+      await prisma.tempDeletedShare.deleteMany({
+        where: { fileId, recipientEmail: user.email }
+      });
+    }
+
+    return NextResponse.json({ success: true });
+
+  } catch (error) {
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
 }

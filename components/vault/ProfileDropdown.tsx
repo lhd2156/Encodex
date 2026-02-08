@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Image from 'next/image';
 import { ensureRecoveryKeyExists, downloadRecoveryKey } from '@/lib/recoveryKey';
 
 interface ProfileDropdownProps {
@@ -12,7 +13,7 @@ interface ProfileDropdownProps {
   storageTotal: number;
   onSettings: () => void;
   onRecoveryKey?: () => void;
-  on2FA: () => void;
+  on2FA?: () => void;
   onSignOut: () => void;
 }
 
@@ -62,31 +63,25 @@ export default function ProfileDropdown({
   const formattedEmail = formatEmail(userEmail);
 
   const handleRecoveryKeyClick = () => {
-    console.log('🔑 Recovery key clicked!');
-    
     // Try to get existing key
     const keyStorageKey = `recovery_key_${userEmail}`;
     const key = localStorage.getItem(keyStorageKey) || '';
     
     if (!key) {
       // No key exists - alert the user
-      console.log('❌ No recovery key found for user');
       alert('No recovery key found. Recovery keys are generated during account registration. If you need a recovery key, please contact support or create a new account.');
       return;
     }
     
-    console.log('🔑 Retrieved key: Found');
     setRecoveryKey(key);
     setShowRecoveryModal(true);
     setJustGenerated(false); // This is an existing key, not newly generated
-    console.log('🔑 Modal should now be visible');
     setCopied(false);
     
     if (onRecoveryKey) {
       onRecoveryKey();
     }
   };
-
 
   const handleCopy = async () => {
     if (recoveryKey) {
@@ -103,7 +98,6 @@ export default function ProfileDropdown({
   };
 
   const closeModal = () => {
-    console.log('🔑 Closing modal');
     setShowRecoveryModal(false);
     setJustGenerated(false);
   };
@@ -121,7 +115,7 @@ export default function ProfileDropdown({
                 className="w-12 h-12 rounded-full object-cover flex-shrink-0"
               />
             ) : (
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
+              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-orange-400 to-orange-500 flex items-center justify-center text-white font-bold text-lg flex-shrink-0">
                 {userInitial}
               </div>
             )}
@@ -149,7 +143,7 @@ export default function ProfileDropdown({
                   ? 'bg-gradient-to-r from-red-500 to-red-600'
                   : storagePercent > 75
                   ? 'bg-gradient-to-r from-yellow-500 to-orange-500'
-                  : 'bg-gradient-to-r from-teal-400 to-blue-500'
+                  : 'bg-gradient-to-r from-gray-400 to-gray-500'
               }`}
               style={{ width: `${Math.min(storagePercent, 100)}%` }}
             />
@@ -167,11 +161,8 @@ export default function ProfileDropdown({
           {/* Recovery Key */}
           <button
             onClick={() => {
-              console.log('🔑 Recovery key clicked in ProfileDropdown');
-              
               // If parent provided onRecoveryKey callback, use that
               if (onRecoveryKey) {
-                console.log('🔑 Using parent onRecoveryKey callback');
                 onRecoveryKey();
                 return;
               }
@@ -352,7 +343,7 @@ export default function ProfileDropdown({
                         Export your recovery key
                       </h3>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <span style={{ fontSize: '1.5rem' }}>🔑</span>
+                        <Image src="/encodex-key.svg" alt="Key" width={24} height={24} />
                         <code style={{ color: '#fbbf24', fontSize: '1.25rem', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
                           {recoveryKey}
                         </code>
@@ -365,22 +356,22 @@ export default function ProfileDropdown({
                       style={{
                         marginLeft: '2rem',
                         padding: '0.75rem 2rem',
-                        backgroundColor: '#14b8a6',
+                        backgroundColor: '#f97316',
                         color: 'white',
                         borderRadius: '0.5rem',
                         fontWeight: '600',
                         border: 'none',
                         cursor: 'pointer',
-                        boxShadow: '0 10px 15px -3px rgba(20 184 166 / 0.2)',
+                        boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.2)',
                         fontSize: '1rem',
                         transition: 'all 0.2s',
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#0d9488';
+                        e.currentTarget.style.backgroundColor = '#ea580c';
                         e.currentTarget.style.transform = 'translateY(-2px)';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#14b8a6';
+                        e.currentTarget.style.backgroundColor = '#f97316';
                         e.currentTarget.style.transform = 'translateY(0)';
                       }}
                     >

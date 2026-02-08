@@ -28,10 +28,13 @@ export interface SharedFileEntry {
 // Helper to get auth token
 const getAuthToken = () => typeof window !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
 
-// API call helper
-const apiCall = async (endpoint: string, options: RequestInit = {}) => {
+// API call helper - returns null if no auth token (graceful handling for fresh signups)
+const apiCall = async (endpoint: string, options: RequestInit = {}): Promise<any | null> => {
   const token = getAuthToken();
-  if (!token) throw new Error('No auth token');
+  if (!token) {
+    // Return null instead of throwing - caller should handle this gracefully
+    return null;
+  }
   
   const response = await fetch(endpoint, {
     ...options,
@@ -65,7 +68,6 @@ class SharedFilesManager {
    */
   triggerSync(): void {
     if (typeof window !== 'undefined') {
-      console.log('🔔 [MANAGER] Triggering sync event');
       window.dispatchEvent(new Event(SHARED_FILES_EVENT));
     }
   }
@@ -77,6 +79,8 @@ class SharedFilesManager {
   async getSharedWithMeAsync(currentUserEmail: string): Promise<SharedFileEntry[]> {
     try {
       const response = await apiCall('/api/shares');
+      // Handle no auth token (returns null) or empty response
+      if (!response) return [];
       const allShares = response.data || [];
       
       // Normalize email for case-insensitive comparison
@@ -97,10 +101,9 @@ class SharedFilesManager {
           parentFolderId: share.parentFolderId || null,
         }));
       
-      console.log(`📥 [MANAGER] Fetched ${sharedWithMe.length} shares for ${currentUserEmail}`);
       return sharedWithMe;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to get shared files:', error);
+      
       return [];
     }
   }
@@ -112,7 +115,6 @@ class SharedFilesManager {
   getSharedWithMe(currentUserEmail: string): SharedFileEntry[] {
     // Return empty array synchronously - components should use async version
     // or rely on state management
-    console.log('⚠️ [MANAGER] Sync getSharedWithMe called - consider using async version');
     return [];
   }
 
@@ -122,6 +124,8 @@ class SharedFilesManager {
   async getSharedByMeAsync(currentUserEmail: string): Promise<SharedFileEntry[]> {
     try {
       const response = await apiCall('/api/shares');
+      // Handle no auth token (returns null) or empty response
+      if (!response) return [];
       const allShares = response.data || [];
       
       // Normalize email for case-insensitive comparison
@@ -144,7 +148,7 @@ class SharedFilesManager {
       
       return sharedByMe;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to get shared by me:', error);
+      
       return [];
     }
   }
@@ -162,9 +166,11 @@ class SharedFilesManager {
         method: 'POST',
         body: JSON.stringify({ fileId })
       });
+      // Handle no auth token (returns null)
+      if (!response) return [];
       return response.recipients || [];
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to get recipients:', error);
+      
       return [];
     }
   }
@@ -174,7 +180,6 @@ class SharedFilesManager {
    */
   getShareRecipients(fileId: string): string[] {
     // Return empty immediately - callers should update to use async version
-    console.log('⚠️ [MANAGER] Sync getShareRecipients called - result will be empty');
     return [];
   }
 
@@ -206,14 +211,15 @@ class SharedFilesManager {
         })
       });
 
+      // Handle no auth token (returns null)
+      if (!response) return false;
       if (response.success || response.id) {
-        console.log(`✅ [MANAGER] Shared "${fileName}" with ${recipientEmail}`);
         this.triggerSync();
         return true;
       }
       return false;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to share file:', error);
+      
       return false;
     }
   }
@@ -231,13 +237,12 @@ class SharedFilesManager {
       });
 
       if (response.ok) {
-        console.log(`✅ [MANAGER] Unshared ${fileId} from ${recipientEmail}`);
         this.triggerSync();
         return true;
       }
       return false;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to unshare file:', error);
+      
       return false;
     }
   }
@@ -255,13 +260,12 @@ class SharedFilesManager {
       });
 
       if (response.ok) {
-        console.log(`✅ [MANAGER] Removed all shares for ${fileId}`);
         this.triggerSync();
         return true;
       }
       return false;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to remove all shares:', error);
+      
       return false;
     }
   }
@@ -284,14 +288,15 @@ class SharedFilesManager {
         })
       });
 
+      // Handle no auth token (returns null)
+      if (!response) return false;
       if (response.success) {
-        console.log(`✅ [MANAGER] Updated share entry for ${fileId}`);
         this.triggerSync();
         return true;
       }
       return false;
     } catch (error) {
-      console.error('❌ [MANAGER] Failed to update share entry:', error);
+      
       return false;
     }
   }

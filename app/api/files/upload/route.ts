@@ -16,23 +16,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ✅ DEBUG: Verify user exists in database and IDs match
+    // Verify user exists in database and IDs match
     const dbUser = await prisma.user.findUnique({
       where: { id: user.userId },
       select: { id: true, email: true }
     });
     
-    console.log('🔐 [UPLOAD-AUTH] User verification:', {
-      tokenUserId: user.userId,
-      tokenEmail: user.email,
-      dbUserId: dbUser?.id,
-      dbEmail: dbUser?.email,
-      emailMatch: dbUser?.email?.toLowerCase() === user.email.toLowerCase(),
-      idMatch: dbUser?.id === user.userId
-    });
-
     if (!dbUser) {
-      console.error('❌ [UPLOAD] User ID from token not found in database!');
+      
       return NextResponse.json(
         { error: 'User not found' },
         { status: 401 }
@@ -40,7 +31,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (dbUser.email.toLowerCase() !== user.email.toLowerCase()) {
-      console.error('❌ [UPLOAD] Email mismatch! Token:', user.email, 'DB:', dbUser.email);
+      
       // Use the email from the database as the source of truth
       user.email = dbUser.email;
     }
@@ -57,17 +48,6 @@ export async function POST(req: NextRequest) {
       isFolder
     } = body;
 
-    console.log('📥 [UPLOAD] Request received:', {
-      fileName,
-      isFolder,
-      size,
-      parentFolderId: parentFolderId || 'NULL (root)',
-      hasEncryptedData: !!encryptedData,
-      encryptedDataLength: encryptedData?.length,
-      userId: user.userId,
-      userEmail: user.email  // ✅ Log email for debugging
-    });
-
     // Validation
     if (!fileName) {
       return NextResponse.json(
@@ -76,24 +56,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // ✅ SAFETY: Ensure user email is valid
+    // SAFETY: Ensure user email is valid
     if (!user.email) {
-      console.error('❌ [UPLOAD] User email is empty or undefined!');
+      
       return NextResponse.json(
         { error: 'Invalid user authentication' },
         { status: 401 }
       );
     }
 
-    // ✅ CRITICAL FIX: Files/folders should ALWAYS belong to the UPLOADER
+    // FIX: Files/folders should ALWAYS belong to the UPLOADER
     // NO ownership transfer - each user owns what they create
     // Sharing is handled separately via Share records
     let effectiveOwnerEmail = user.email;
     let effectiveOwnerId = user.userId;
     let uploadedByEmail: string | null = null;
-
-    console.log(`📁 [UPLOAD] OWNER WILL BE: ${effectiveOwnerEmail} (ID: ${effectiveOwnerId})`);
-    console.log(`📁 [UPLOAD] parentFolderId = ${parentFolderId || 'null (ROOT)'}`);
 
     // Log parent folder info for debugging but DON'T transfer ownership
     if (parentFolderId) {
@@ -102,31 +79,20 @@ export async function POST(req: NextRequest) {
         select: { userId: true, ownerEmail: true, name: true }
       });
 
-      console.log(`📁 [UPLOAD] Parent folder info (FOR DEBUGGING ONLY):`, {
-        parentFolderId,
-        found: !!parentFolder,
-        parentName: parentFolder?.name,
-        parentOwnerEmail: parentFolder?.ownerEmail,
-        uploaderEmail: user.email,
-        isSameOwner: parentFolder?.ownerEmail?.toLowerCase() === user.email.toLowerCase()
-      });
-      
-      // ✅ DO NOT TRANSFER OWNERSHIP - just log if it's a shared folder
+      // DO NOT TRANSFER OWNERSHIP - just log if it's a shared folder
       if (parentFolder && parentFolder.ownerEmail.toLowerCase() !== user.email.toLowerCase()) {
-        console.log(`📁 [UPLOAD] ⚠️ Uploading to someone else's folder - but KEEPING ownership with uploader ${user.email}`);
         uploadedByEmail = user.email; // Just track who uploaded, don't change owner
       }
     }
 
-    // ✅ FIX: Allow empty encryption data for now (client may not be encrypting yet)
+    // Allow empty encryption data for now (client may not be encrypting yet)
     // We'll store empty buffers and the client can update them later
     const isEncrypted = encryptedData && encryptedData.length > 0 && iv && iv.length > 0 && wrappedKey && wrappedKey.length > 0;
     
     if (!isFolder && !isEncrypted) {
-      console.warn('⚠️ [UPLOAD] File uploaded without encryption data - storing empty buffers');
-    }
+      }
 
-    // ✅ FIX: Auto-rename files if a duplicate exists (instead of returning 409)
+    // Auto-rename files if a duplicate exists (instead of returning 409)
     let finalFileName = fileName;
     
     // Helper function to generate unique name (uses effectiveOwnerId determined above)
@@ -181,13 +147,12 @@ export async function POST(req: NextRequest) {
         }
       }
       
-      console.log(`📝 [UPLOAD] Auto-renamed "${baseName}" → "${candidateName}"`);
       return candidateName;
     };
     
     finalFileName = await makeUniqueFileName(fileName);
 
-    // ✅ FIX: Safely convert arrays to Buffers, handling empty/null cases
+    // Safely convert arrays to Buffers, handling empty/null cases
     let encryptedDataBuffer: Buffer;
     let ivBuffer: Buffer;
     let wrappedKeyBuffer: Buffer;
@@ -214,13 +179,8 @@ export async function POST(req: NextRequest) {
         wrappedKeyBuffer = Buffer.alloc(0);
       }
 
-      console.log('📦 [UPLOAD] Buffer conversion successful:', {
-        encryptedDataSize: encryptedDataBuffer.length,
-        ivSize: ivBuffer.length,
-        wrappedKeySize: wrappedKeyBuffer.length
-      });
-    } catch (bufferError) {
-      console.error('❌ [UPLOAD] Buffer conversion failed:', bufferError);
+      } catch (bufferError) {
+      
       return NextResponse.json(
         { error: 'Failed to process encryption data' },
         { status: 400 }
@@ -234,9 +194,9 @@ export async function POST(req: NextRequest) {
           userId: effectiveOwnerId,
           ownerEmail: effectiveOwnerEmail,
           ownerName: uploadedByEmail,  // Only set when receiver uploads to sender's folder (stores uploader's EMAIL)
-          name: finalFileName,  // ✅ Use auto-renamed filename
+          name: finalFileName,  // Use auto-renamed filename
           size: BigInt(size || 0),
-          type: isFolder ? 'folder' : 'file',  // ✅ Store type field
+          type: isFolder ? 'folder' : 'file',  // Store type field
           mimeType: mimeType || null,
           encryptedData: encryptedDataBuffer,
           iv: ivBuffer,
@@ -248,15 +208,7 @@ export async function POST(req: NextRequest) {
         }
       });
 
-      console.log('✅ [UPLOAD] File created successfully:', {
-        id: file.id,
-        name: file.name,
-        isFolder: file.isFolder,
-        ownerId: effectiveOwnerId,
-        ownerEmail: effectiveOwnerEmail
-      });
-
-      // ✅ NO AUTO-SHARING HERE - sharing is handled by the client via handleCreateFolder/handleFilesSelected
+      // NO AUTO-SHARING HERE - sharing is handled by the client via handleCreateFolder/handleFilesSelected
 
       return NextResponse.json({
         success: true,
@@ -271,7 +223,7 @@ export async function POST(req: NextRequest) {
         }
       });
     } catch (dbError: any) {
-      console.error('❌ [UPLOAD] Database error:', dbError);
+      
       
       // Check for specific Prisma errors
       if (dbError.code === 'P2002') {
@@ -285,8 +237,8 @@ export async function POST(req: NextRequest) {
     }
 
   } catch (error: any) {
-    console.error('❌ [UPLOAD] Upload error:', error);
-    console.error('Error stack:', error.stack);
+    
+    
     
     return NextResponse.json(
       { 

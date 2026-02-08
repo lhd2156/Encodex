@@ -36,8 +36,6 @@ export async function DELETE(req: NextRequest) {
       );
     }
 
-    console.log(`🔥 [BULK_PERM_DELETE] Attempting to permanently delete ${fileIds.length} files for ${userEmail}`);
-
     // Helper function to recursively get all descendant file IDs
     const getAllDescendantIds = async (folderIds: string[]): Promise<string[]> => {
       if (folderIds.length === 0) return [];
@@ -95,8 +93,6 @@ export async function DELETE(req: NextRequest) {
 
     const files = filesWithAncestorCheck.filter(f => f.canDelete);
 
-    console.log(`🔥 [BULK_PERM_DELETE] Found ${files.length} owned files to delete (out of ${allOwnedFiles.length} owned). Looking for non-owned...`);
-
     // Also check if any of these files are shared files that the user (as recipient) has in trash
     // Recipient can only delete their share record, not the actual file
     const sharedFilesInTrash = await prisma.receiverTrashedShare.findMany({
@@ -111,11 +107,9 @@ export async function DELETE(req: NextRequest) {
     });
 
     if (sharedFilesInTrash.length > 0) {
-      console.log(`🔥 [BULK_PERM_DELETE] Found ${sharedFilesInTrash.length} shared files in recipient's trash`);
-      
       const sharedFileIds = sharedFilesInTrash.map(f => f.fileId);
       
-      // ✅ CRITICAL: Check if any of these are folders, and get ALL their children
+      // Check if any of these are folders, and get ALL their children
       // This ensures the entire folder tree is unshared, not just the parent folder
       const foldersBeingDeleted = await prisma.file.findMany({
         where: { 
@@ -129,15 +123,10 @@ export async function DELETE(req: NextRequest) {
       
       if (foldersBeingDeleted.length > 0) {
         const folderIds = foldersBeingDeleted.map(f => f.id);
-        console.log(`📁 [BULK_PERM_DELETE] ${folderIds.length} folder(s) being deleted, finding all children...`);
-        
         const descendantIds = await getAllDescendantIds(folderIds);
-        console.log(`📁 [BULK_PERM_DELETE] Found ${descendantIds.length} descendant file(s) inside folders`);
-        
         // Combine parent folders and all descendants
         allIdsToUnshare = [...new Set([...sharedFileIds, ...descendantIds])];
-        console.log(`📁 [BULK_PERM_DELETE] Total files to unshare: ${allIdsToUnshare.length}`);
-      }
+        }
       
       // 1. Delete the receiver trashed records (this removes them from recipient's trash)
       await prisma.receiverTrashedShare.deleteMany({
@@ -149,9 +138,7 @@ export async function DELETE(req: NextRequest) {
           },
         },
       });
-      console.log(`✅ [BULK_PERM_DELETE] Removed shared files from recipient's trash view`);
-      
-      // 2. ✅ CRITICAL: Also delete the Share records - this UNSHARES the file
+      // 2. CRITICAL: Also delete the Share records - this UNSHARES the file 
       // This allows the sender to re-share if they wish
       const deletedShares = await prisma.share.deleteMany({
         where: {
@@ -162,8 +149,6 @@ export async function DELETE(req: NextRequest) {
           },
         },
       });
-      console.log(`✅ [BULK_PERM_DELETE] Deleted ${deletedShares.count} share record(s) - file unshared from sender's view`);
-      
       // 3. Also clean up any other metadata for this recipient
       await prisma.tempDeletedShare.deleteMany({
         where: {
@@ -184,20 +169,16 @@ export async function DELETE(req: NextRequest) {
           },
         },
       });
-      console.log(`✅ [BULK_PERM_DELETE] Cleaned up all metadata for recipient`);
-    }
+      }
 
     if (files.length === 0 && sharedFilesInTrash.length === 0) {
-      console.log(`❌ [BULK_PERM_DELETE] No files found. FileIds: ${fileIds.join(', ')}`);
       // Debug: check if files exist at all
       const anyFiles = await prisma.file.findMany({
         where: { id: { in: fileIds } },
         select: { id: true, ownerEmail: true, isDeleted: true }
       });
       if (anyFiles.length > 0) {
-        console.log(`❌ [BULK_PERM_DELETE] Files exist but not owned by ${userEmail}:`, 
-          anyFiles.map(f => ({ id: f.id, owner: f.ownerEmail, inTrash: f.isDeleted })));
-      }
+        }
       return NextResponse.json(
         { error: 'No valid files found in trash that you own' },
         { status: 404 }
@@ -205,46 +186,34 @@ export async function DELETE(req: NextRequest) {
     }
 
     const validFileIds = files.map(f => f.id);
-    console.log(`🔥 [BULK_PERM_DELETE] Found ${validFileIds.length} valid files to delete`);
-
     // Delete all related records for these files
     // 1. Delete shares
     await prisma.share.deleteMany({
       where: { fileId: { in: validFileIds } },
     });
-    console.log(`✅ [BULK_PERM_DELETE] Deleted shares for ${validFileIds.length} files`);
-
     // 2. Delete temp deleted records
     await prisma.tempDeletedShare.deleteMany({
       where: { fileId: { in: validFileIds } },
     });
-    console.log(`✅ [BULK_PERM_DELETE] Deleted temp_deleted records`);
-
     // 3. Delete hidden share records
     await prisma.hiddenShare.deleteMany({
       where: { fileId: { in: validFileIds } },
     });
-    console.log(`✅ [BULK_PERM_DELETE] Deleted hidden_share records`);
-
     // 4. Delete receiver trashed records
     await prisma.receiverTrashedShare.deleteMany({
       where: { fileId: { in: validFileIds } },
     });
-    console.log(`✅ [BULK_PERM_DELETE] Deleted receiver_trashed records`);
-
     // 5. Finally, delete the files themselves
     const deleteResult = await prisma.file.deleteMany({
       where: { id: { in: validFileIds } },
     });
-    console.log(`✅ [BULK_PERM_DELETE] ${deleteResult.count} files permanently deleted`);
-
     return NextResponse.json({
       success: true,
       message: `${deleteResult.count} files permanently deleted`,
       deletedCount: deleteResult.count,
     });
   } catch (error) {
-    console.error('❌ [BULK_PERM_DELETE] Error permanently deleting files:', error);
+    
     return NextResponse.json(
       { error: 'Failed to permanently delete files' },
       { status: 500 }

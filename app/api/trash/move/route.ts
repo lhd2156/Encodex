@@ -36,8 +36,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    console.log(`🗑️ [TRASH_MOVE] Moving ${fileIds.length} files to trash for ${userEmail}`);
-
     // Move files to trash (update database records)
     const result = await prisma.file.updateMany({
       where: {
@@ -52,8 +50,6 @@ export async function POST(req: NextRequest) {
         deletedBy: userEmail,
       },
     });
-
-    console.log(`✅ [TRASH_MOVE] Updated ${result.count} files to isDeleted=true`);
 
     // For each file, sync trash status to all recipients (if shared)
     for (const fileId of fileIds) {
@@ -73,8 +69,7 @@ export async function POST(req: NextRequest) {
           })),
           skipDuplicates: true, // Prevent duplicates
         });
-        console.log(`📤 [TRASH_MOVE] Synced trash status to ${shares.length} recipients for file ${fileId}`);
-      }
+        }
     }
 
     return NextResponse.json({
@@ -83,7 +78,7 @@ export async function POST(req: NextRequest) {
       count: result.count,
     });
   } catch (error) {
-    console.error('❌ [TRASH_MOVE] Error moving to trash:', error);
+    
     return NextResponse.json(
       { error: 'Failed to move to trash' },
       { status: 500 }

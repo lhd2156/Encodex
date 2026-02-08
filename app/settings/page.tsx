@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef, useState, useEffect } from 'react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { getSession, isSessionValid, updateSession } from '@/lib/session';
 import { downloadRecoveryKey } from '@/lib/recoveryKey';
@@ -37,7 +38,7 @@ export default function SettingsPage() {
 
     const session = getSession();
     if (session) {
-      // ✅ CRITICAL: Auth token is in sessionStorage (tab-specific!)
+      // Auth token is in sessionStorage (tab-specific!)
       const authToken = sessionStorage.getItem('auth_token');
       
       // Get email from token (tab-specific, accurate)
@@ -50,14 +51,14 @@ export default function SettingsPage() {
             finalEmail = payload.email.toLowerCase();
           }
         } catch (e) {
-          console.error('Failed to decode token:', e);
+          
         }
       }
       
       setUserEmail(finalEmail);
       setNewEmail(finalEmail);
       
-      // ✅ FIX: Fetch user's ACTUAL name from database (not shared localStorage!)
+      // Fetch user's ACTUAL name from database (not shared localStorage!)
       const fetchProfile = async () => {
         if (!authToken) {
           // Fallback to session
@@ -76,14 +77,13 @@ export default function SettingsPage() {
           if (response.ok) {
             const data = await response.json();
             if (data.success && data.user) {
-              console.log('📋 [SETTINGS] Profile from DB:', data.user.firstName, data.user.lastName);
               setFirstName(data.user.firstName);
               setLastName(data.user.lastName || '');
               return;
             }
           }
         } catch (e) {
-          console.error('📋 [SETTINGS] Failed to fetch profile from API:', e);
+          
         }
         
         // Fallback to session
@@ -104,8 +104,7 @@ export default function SettingsPage() {
           localStorage.setItem(`profile_image_${finalEmail}`, oldImage);
           localStorage.removeItem(`profile_image_${session.userEmail}`);
           setProfileImage(oldImage);
-          console.log('🔄 Migrated profile image to normalized email key');
-        }
+          }
       } else {
         setProfileImage(savedImage);
       }
@@ -152,7 +151,7 @@ export default function SettingsPage() {
       return;
     }
 
-    // ✅ FIX: Update userAccounts if it exists (legacy support)
+    // Update userAccounts if it exists (legacy support)
     const accounts = JSON.parse(localStorage.getItem('userAccounts') || '[]');
     const accountIndex = accounts.findIndex((acc: any) => acc.email === userEmail);
 
@@ -162,10 +161,10 @@ export default function SettingsPage() {
       localStorage.setItem('userAccounts', JSON.stringify(accounts));
     }
     
-    // ✅ FIX: ALWAYS update session - this is the main source of truth
+    // ALWAYS update session - this is the main source of truth
     updateSession(userEmail, firstName, lastName);
     
-    // ✅ FIX: ALWAYS update the 'user' object used by the API system
+    // ALWAYS update the 'user' object used by the API system
     const storedUser = localStorage.getItem('user');
     if (storedUser) {
       try {
@@ -174,7 +173,7 @@ export default function SettingsPage() {
         user.lastName = lastName;
         localStorage.setItem('user', JSON.stringify(user));
       } catch (e) {
-        console.error('Failed to update user object:', e);
+        
       }
     } else {
       // Create the user object if it doesn't exist
@@ -185,11 +184,10 @@ export default function SettingsPage() {
       }));
     }
     
-    // ✅ FIX: Update name in database so shared files show correct owner name
+    // Update name in database so shared files show correct owner name
     const authToken = sessionStorage.getItem('auth_token');
     if (authToken) {
       try {
-        console.log(`📤 [SETTINGS] Calling /api/auth/profile with firstName="${firstName}", lastName="${lastName}"`);
         const response = await fetch('/api/auth/profile', {
           method: 'PATCH',
           headers: {
@@ -202,20 +200,18 @@ export default function SettingsPage() {
         const result = await response.json();
         
         if (response.ok && result.success) {
-          console.log(`✅ [SETTINGS] Profile updated in database! User: ${result.user?.firstName} ${result.user?.lastName}, Files updated: ${result.filesUpdated}`);
-        } else {
-          console.error('❌ [SETTINGS] Failed to update profile in database:', result.error || response.statusText);
+          } else {
+          
           setErrorMessage(`Failed to save to server: ${result.error || 'Unknown error'}`);
           return;
         }
       } catch (e) {
-        console.error('❌ [SETTINGS] Error updating profile in database:', e);
+        
         setErrorMessage('Network error while saving profile');
         return;
       }
     } else {
-      console.warn('⚠️ [SETTINGS] No auth token found, profile not saved to database');
-    }
+      }
     
     // Dispatch event to notify other components (vault page)
     window.dispatchEvent(new Event('profileUpdated'));
@@ -295,7 +291,7 @@ export default function SettingsPage() {
   };
 
   const handleShowRecoveryKey = () => {
-    // ✅ FIX: Use normalized (lowercase) email for lookup
+    // Use normalized (lowercase) email for lookup
     const normalizedEmail = userEmail.toLowerCase();
     let key = localStorage.getItem(`recovery_key_${normalizedEmail}`);
     
@@ -307,8 +303,7 @@ export default function SettingsPage() {
       if (key) {
         localStorage.setItem(`recovery_key_${normalizedEmail}`, key);
         localStorage.removeItem(`recovery_key_${userEmail}`);
-        console.log('🔄 Migrated recovery key to normalized email');
-      }
+        }
     }
 
     if (!key) {
@@ -395,7 +390,7 @@ export default function SettingsPage() {
                   className="w-24 h-24 rounded-full object-cover"
                 />
               ) : (
-                <div className="w-24 h-24 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center text-white font-bold text-3xl">
+                <div className="w-24 h-24 rounded-full bg-gradient-to-br from-orange-400 to-orange-600 flex items-center justify-center text-white font-bold text-3xl">
                   {getUserInitials()}
                 </div>
               )}
@@ -686,7 +681,7 @@ export default function SettingsPage() {
                         Export your recovery key
                       </h3>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <span style={{ fontSize: '1.5rem' }}>🔑</span>
+                        <Image src="/encodex-key.svg" alt="Key" width={24} height={24} />
                         <code style={{ color: '#fbbf24', fontSize: '1.25rem', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
                           {recoveryKey}
                         </code>
@@ -698,13 +693,13 @@ export default function SettingsPage() {
                       style={{
                         marginLeft: '2rem',
                         padding: '0.75rem 2rem',
-                        backgroundColor: '#14b8a6',
+                        backgroundColor: '#f97316',
                         color: 'white',
                         borderRadius: '0.5rem',
                         fontWeight: '600',
                         border: 'none',
                         cursor: 'pointer',
-                        boxShadow: '0 10px 15px -3px rgba(20 184 166 / 0.2)',
+                        boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.2)',
                         fontSize: '1rem',
                         transition: 'all 0.2s',
                       }}

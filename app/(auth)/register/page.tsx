@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { createSession } from "@/lib/session";
 import { storePasswordHash } from "@/lib/crypto";
 import { ensureRecoveryKeyExists, downloadRecoveryKey } from "@/lib/recoveryKey";
+import { useVaultContext } from "@/lib/vault/vault-context";
 
 import AuthLayout from "@/components/auth/AuthLayout";
 import AuthCard from "@/components/auth/AuthCard";
@@ -15,6 +16,7 @@ import AuthInput from "@/components/auth/AuthInput";
 import PasswordInput from "@/components/auth/PasswordInput";
 import AuthButton from "@/components/auth/AuthButton";
 import AuthRegisterInfo from "@/components/auth/AuthRegisterInfo";
+import Image from "next/image";
 
 // simple validators
 const isValidEmail = (email: string) =>
@@ -25,6 +27,7 @@ const isOnlyLetters = (value: string) =>
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { unlock } = useVaultContext();
 
   // refs
   const firstNameRef = useRef<HTMLInputElement>(null);
@@ -45,9 +48,14 @@ export default function RegisterPage() {
   // Recovery key modal state
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState("");
+  
+  // Agreement checkboxes state
+  const [agreedDataLoss, setAgreedDataLoss] = useState(false);
+  const [agreedTerms, setAgreedTerms] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserFirstName, setNewUserFirstName] = useState("");
   const [newUserLastName, setNewUserLastName] = useState("");
+  const [savedPassword, setSavedPassword] = useState("");
   const [copied, setCopied] = useState(false);
 
   const handleRegister = async () => {
@@ -83,7 +91,7 @@ export default function RegisterPage() {
     setEmailAlreadyUsed(false);
 
     try {
-      // ✅ CALL API
+      // CALL API
       const response = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -107,18 +115,18 @@ export default function RegisterPage() {
         return;
       }
 
-      // ✅ CRITICAL FIX: Clear ALL old session data before setting new
+      // FIX: Clear ALL old session data before setting new
       // This prevents cross-user data contamination
       sessionStorage.clear(); // Clear all sessionStorage
       localStorage.removeItem('user_session');
       localStorage.removeItem('session');
       localStorage.removeItem('user');
       
-      // ✅ STORE AUTH TOKEN (sessionStorage for per-tab isolation)
+      // STORE AUTH TOKEN (sessionStorage for per-tab isolation)
       sessionStorage.setItem('auth_token', data.token);
       localStorage.setItem('user', JSON.stringify(data.user));
 
-      // ✅ STORE SALT FOR ENCRYPTION
+      // STORE SALT FOR ENCRYPTION
       if (data.salt) {
         const saltUint8 = new Uint8Array(data.salt);
         const hexSalt = Array.from(saltUint8)
@@ -127,15 +135,16 @@ export default function RegisterPage() {
         localStorage.setItem(`vault_salt_${email}`, hexSalt);
       }
 
-      // ✅ STORE PASSWORD HASH FOR CLIENT-SIDE VERIFICATION
+      // STORE PASSWORD HASH FOR CLIENT-SIDE VERIFICATION
       await storePasswordHash(email, password);
 
-      // 🔑 GENERATE RECOVERY KEY
+      // GENERATE RECOVERY KEY
       const key = ensureRecoveryKeyExists(email);
       setRecoveryKey(key);
       setNewUserEmail(email);
       setNewUserFirstName(first);
       setNewUserLastName(last);
+      setSavedPassword(password); // Save for auto-unlock
       setCopied(false);
       
       setIsLoading(false);
@@ -144,15 +153,23 @@ export default function RegisterPage() {
       setShowRecoveryModal(true);
 
     } catch (error) {
-      console.error('Registration error:', error);
+      
       alert('An error occurred during registration. Please try again.');
       setIsLoading(false);
     }
   };
 
-  const handleContinueToVault = () => {
+  const handleContinueToVault = async () => {
     // Create session and redirect to vault
     createSession(newUserEmail, newUserFirstName, newUserLastName);
+    
+    // Auto-unlock vault with the password (E2E encryption)
+    try {
+      await unlock(savedPassword);
+    } catch (e) {
+      // Unlock may fail - vault modal will handle it
+    }
+    
     router.push("/vault");
   };
 
@@ -171,21 +188,23 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="h-screen bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      <header className="flex justify-between items-center px-12 py-8">
+    <div className="h-screen flex flex-col bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
+      <header className="flex-shrink-0 flex justify-between items-center px-4 sm:px-8 lg:px-12 py-4 lg:py-6">
         <div 
           onClick={() => router.push('/start')} 
-          className="flex items-center gap-3 cursor-pointer"
+          className="flex items-center gap-2 sm:gap-3 cursor-pointer"
         >
-          <div className="text-3xl">🔒</div>
-          <span className="text-[28px] font-semibold tracking-wide text-white">
+          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-orange-500 flex items-center justify-center">
+            <Image src="/encodex-logo-lock.svg" alt="Encodex" width={24} height={24} className="sm:w-7 sm:h-7" />
+          </div>
+          <span className="text-xl sm:text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
         </div>
 
         <button
           onClick={() => router.push('/login')}
-          className="px-6 py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white font-medium transition-colors cursor-pointer"
+          className="px-4 sm:px-6 py-2 sm:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-sm sm:text-base font-medium transition-colors cursor-pointer"
         >
           Log in
         </button>
@@ -194,13 +213,13 @@ export default function RegisterPage() {
       <AuthLayout
         left={
           <AuthCard>
-            <h1 className="text-[30px] text-center mb-14 text-white">
+            <h1 className="text-[24px] lg:text-[30px] text-center mb-6 lg:mb-10 text-white">
               Sign up for a{" "}
               <span className="text-orange-500">free</span> account
             </h1>
 
-            <div className="flex flex-col gap-10">
-              <div className="grid grid-cols-2 gap-6">
+            <div className="flex flex-col gap-5 lg:gap-6">
+              <div className="grid grid-cols-2 gap-4 lg:gap-6">
                 <AuthInput
                   label="First name"
                   inputRef={firstNameRef as React.RefObject<HTMLInputElement>}
@@ -220,7 +239,7 @@ export default function RegisterPage() {
               />
 
               {emailAlreadyUsed && (
-                <div className="text-red-500 text-sm -mt-8">
+                <div className="text-red-500 text-sm -mt-4">
                   Email already has been used
                 </div>
               )}
@@ -238,15 +257,40 @@ export default function RegisterPage() {
               />
             </div>
 
-            <div className="flex-grow" />
+            {/* Agreement Checkboxes */}
+            <div className="mt-4 lg:mt-6 space-y-2 lg:space-y-3">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedDataLoss}
+                  onChange={(e) => setAgreedDataLoss(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer"
+                />
+                <span className="text-xs lg:text-sm text-neutral-400">
+                  I understand that <span className="text-red-400 font-semibold">if I lose my password, I may lose my data</span>. Read more about Encodex's end-to-end encryption.
+                </span>
+              </label>
+              
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agreedTerms}
+                  onChange={(e) => setAgreedTerms(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer"
+                />
+                <span className="text-xs lg:text-sm text-neutral-400">
+                  I have read, understood, and agree to Encodex's <span className="text-orange-400 hover:underline cursor-pointer">Terms of Service</span>.
+                </span>
+              </label>
+            </div>
 
-            <div className="mt-8 flex justify-end">
-              <AuthButton onClick={handleRegister} disabled={isLoading}>
+            <div className="mt-4 lg:mt-6 flex justify-end">
+              <AuthButton onClick={handleRegister} disabled={isLoading || !agreedDataLoss || !agreedTerms}>
                 {isLoading ? 'Creating...' : 'Sign up →'}
               </AuthButton>
             </div>
 
-            <p className="text-sm text-center mt-10 text-neutral-400">
+            <p className="text-sm text-center mt-4 lg:mt-6 text-neutral-400">
               Already have an account?{" "}
               <span 
                 onClick={() => router.push('/login')} 
@@ -349,7 +393,7 @@ export default function RegisterPage() {
                         Export your recovery key
                       </h3>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <span style={{ fontSize: '1.5rem' }}>🔑</span>
+                        <Image src="/encodex-key.svg" alt="Key" width={24} height={24} />
                         <code style={{ color: '#fbbf24', fontSize: '1.25rem', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
                           {recoveryKey}
                         </code>
@@ -361,22 +405,22 @@ export default function RegisterPage() {
                       style={{
                         marginLeft: '2rem',
                         padding: '0.75rem 2rem',
-                        backgroundColor: '#14b8a6',
+                        backgroundColor: '#F97316',
                         color: 'white',
                         borderRadius: '0.5rem',
                         fontWeight: '600',
                         border: 'none',
                         cursor: 'pointer',
-                        boxShadow: '0 10px 15px -3px rgba(20 184 166 / 0.2)',
+                        boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.2)',
                         fontSize: '1rem',
                         transition: 'all 0.2s',
                       }}
                       onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#0d9488';
+                        e.currentTarget.style.backgroundColor = '#EA580C';
                         e.currentTarget.style.transform = 'translateY(-2px)';
                       }}
                       onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = '#14b8a6';
+                        e.currentTarget.style.backgroundColor = '#F97316';
                         e.currentTarget.style.transform = 'translateY(0)';
                       }}
                     >
@@ -429,21 +473,21 @@ export default function RegisterPage() {
                   style={{
                     marginTop: '3rem',
                     padding: '0.875rem 3rem',
-                    backgroundColor: '#14b8a6',
+                    backgroundColor: '#F97316',
                     color: 'white',
                     borderRadius: '0.5rem',
                     fontWeight: '700',
                     border: 'none',
                     cursor: 'pointer',
                     fontSize: '1.125rem',
-                    boxShadow: '0 10px 15px -3px rgba(20 184 166 / 0.3)',
+                    boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.3)',
                     transition: 'all 0.2s',
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = '#0d9488';
+                    e.currentTarget.style.backgroundColor = '#EA580C';
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = '#14b8a6';
+                    e.currentTarget.style.backgroundColor = '#F97316';
                   }}
                 >
                   Continue to Vault →

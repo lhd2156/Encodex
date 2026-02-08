@@ -1,35 +1,6 @@
 // lib/session.ts
 // Session management utilities with API integration
 
-// 🔧 DEBUG: Expose debug utilities on window for troubleshooting
-if (typeof window !== 'undefined') {
-  (window as any).__DEBUG_AUTH__ = {
-    showState: () => {
-      console.log('=== AUTH DEBUG STATE ===');
-      console.log('Session:', localStorage.getItem('user_session'));
-      console.log('User:', localStorage.getItem('user'));
-      console.log('Token:', sessionStorage.getItem('auth_token'));
-      const token = sessionStorage.getItem('auth_token');
-      if (token) {
-        try {
-          const payload = JSON.parse(atob(token.split('.')[1]));
-          console.log('Token Payload:', payload);
-        } catch (e) {
-          console.log('Token decode failed');
-        }
-      }
-      console.log('========================');
-    },
-    clearAll: () => {
-      console.log('Clearing all auth data...');
-      localStorage.clear();
-      sessionStorage.clear();
-      console.log('Done! Please refresh the page.');
-    }
-  };
-  console.log('🔧 DEBUG: Call __DEBUG_AUTH__.showState() to see auth state, __DEBUG_AUTH__.clearAll() to reset');
-}
-
 export interface Session {
   userEmail: string;
   firstName: string;
@@ -80,7 +51,6 @@ export async function registerUser(
 
     return { success: true, ...data };
   } catch (error) {
-    console.error('Register error:', error);
     return { success: false, error: 'Network error' };
   }
 }
@@ -104,7 +74,6 @@ export async function loginUser(
 
     return { success: true, ...data };
   } catch (error) {
-    console.error('Login error:', error);
     return { success: false, error: 'Network error' };
   }
 }
@@ -146,7 +115,7 @@ export function createSession(
   const now = Date.now();
   const duration = rememberMe ? REMEMBER_ME_DURATION : SESSION_DURATION;
   const session: Session = {
-    userEmail: email.toLowerCase(), // ✅ Always normalize email to lowercase
+    userEmail: email.toLowerCase(), // Always normalize email to lowercase
     firstName,
     lastName,
     sessionToken:
@@ -157,7 +126,7 @@ export function createSession(
   };
 
   if (typeof window !== 'undefined') {
-    // ✅ CRITICAL: Clear ALL old session data first to prevent contamination
+    // Clear ALL old session data first to prevent contamination
     localStorage.removeItem(SESSION_KEY);
     localStorage.removeItem('session');
     sessionStorage.removeItem('session');
@@ -232,7 +201,7 @@ export function clearSession(): void {
     sessionStorage.removeItem('session');
     localStorage.removeItem('rememberMe');
     localStorage.removeItem('sessionEmail');
-    // ✅ FIX: Also clear auth token and user data on sign out
+    // Also clear auth token and user data on sign out
     sessionStorage.removeItem('auth_token');
     localStorage.removeItem('user');
   }

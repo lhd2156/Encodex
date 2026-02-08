@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
       data: tempDeletedShares,
     });
   } catch (error) {
-    console.error('❌ [TEMP_DELETED] Error fetching temp-deleted shares:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch temp-deleted shares' },
       { status: 500 }
@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   const { fileIds, recipientEmails, isTrashed } = await req.json();
 
   if (isTrashed) {
-    // ✅ FIX: Validate that files are actually in owner's trash before creating TempDeletedShare
+    // Validate that files are actually in owner's trash before creating TempDeletedShare
     // This prevents stale records from being created due to race conditions
     const filesInTrash = await prisma.file.findMany({
       where: {
@@ -80,13 +80,11 @@ export async function POST(req: NextRequest) {
     const filteredFileIds = fileIds.filter((id: string) => validFileIds.has(id));
     
     if (filteredFileIds.length === 0) {
-      console.log(`⚠️ [TEMP_DELETED] No files actually in trash, skipping TempDeletedShare creation`);
       return NextResponse.json({ success: true, skipped: true });
     }
     
     if (filteredFileIds.length !== fileIds.length) {
-      console.log(`⚠️ [TEMP_DELETED] Only ${filteredFileIds.length}/${fileIds.length} files actually in trash`);
-    }
+      }
     
     // Add to temp_deleted for all recipients (only for valid files)
     await prisma.tempDeletedShare.createMany({

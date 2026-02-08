@@ -40,7 +40,6 @@ export function getUserSalt(userEmail: string): Uint8Array {
     .join('');
   localStorage.setItem(saltKey, hexSalt);
   
-  console.log('🔐 Generated new salt for user:', userEmail);
   return newSalt;
 }
 

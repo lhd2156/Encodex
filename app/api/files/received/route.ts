@@ -68,14 +68,12 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    console.log(`✅ [RECEIVED_FILES] Fetched ${receivedFiles.length} files shared with ${userEmail}`);
-
     return NextResponse.json({
       success: true,
       data: receivedFiles,
     });
   } catch (error) {
-    console.error('❌ [RECEIVED_FILES] Error:', error);
+    
     return NextResponse.json(
       { error: 'Failed to fetch received files' },
       { status: 500 }

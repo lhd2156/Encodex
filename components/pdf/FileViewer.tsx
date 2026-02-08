@@ -42,17 +42,10 @@ function RenameModal({
 
   const handleRename = () => {
     const trimmedName = name.trim();
-    console.log('RenameModal handleRename called');
-    console.log('Current name:', currentName);
-    console.log('New name:', trimmedName);
-    console.log('Name changed?', trimmedName !== currentName);
-    
     if (trimmedName) {
-      console.log('Calling onRename with:', trimmedName);
       onRename(trimmedName);
     } else {
-      console.log('Empty name, not renaming');
-    }
+      }
     onClose();
   };
 
@@ -240,7 +233,7 @@ export default function FileViewer({
   const [showBars, setShowBars] = useState(true);
   const [hideTimeout, setHideTimeout] = useState<NodeJS.Timeout | null>(null);
   
-  // ✅ FIX: Sync local isFavorite state when prop changes (e.g., after API update)
+  // Sync local isFavorite state when prop changes (e.g., after API update)
   useEffect(() => {
     setIsFavorite(initialIsFavorite);
   }, [initialIsFavorite]);
@@ -300,16 +293,13 @@ export default function FileViewer({
     if (typeof window !== 'undefined') {
       // Get the actual version from pdfjs
       const version = pdfjs.version;
-      console.log('📦 PDF.js version detected:', version);
-      
       // Build worker URL with the detected version
       const workerSrc = `https://unpkg.com/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
       
       // Force set the worker source (overwrite any existing)
       pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
       
-      console.log('🔧 PDF Worker configured:', workerSrc);
-    }
+      }
   }, []);
 
   // Ensure react-pdf TextLayer/AnnotationLayer styles exist (inject runtime <style> to satisfy library checks)
@@ -334,44 +324,42 @@ export default function FileViewer({
       `;
 
       document.head.appendChild(style);
-      console.log('[FileViewer] injected react-pdf runtime styles');
-
-      // Filter noisy react-pdf warnings that repeatedly spam the console in dev
+      
+      // Silence react-pdf warnings in production
       const IGNORED_PATTERNS: RegExp[] = [ /TextLayer styles not found/, /AnnotationLayer styles not found/ ];
-      const counts: Record<string, number> = {};
-      const MAX_REPEAT = 6;
-
-      const origError = console.error.bind(console);
-      const origWarn = console.warn.bind(console);
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const origError = (console as any).error?.bind(console);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const origWarn = (console as any).warn?.bind(console);
 
       function shouldIgnoreMessage(msg: string) {
         return IGNORED_PATTERNS.some((p) => p.test(msg));
       }
 
-      function makeFiltered(orig: (...args: any[]) => void) {
-        return (...args: any[]) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      function makeFiltered(orig: ((...args: any[]) => void) | undefined) {
+        if (!orig) return () => {};
+        return (...args: unknown[]) => {
           try {
             const first = args[0];
             const text = typeof first === 'string' ? first : JSON.stringify(first);
             if (shouldIgnoreMessage(text)) {
-              counts[text] = (counts[text] || 0) + 1;
-              if (counts[text] <= MAX_REPEAT) {
-                orig(...args);
-              }
-              return;
+              return; // Silently ignore matching messages
             }
-          } catch (e) {
+          } catch {
             // Fall back to original
           }
           orig(...args);
         };
       }
 
-      console.error = makeFiltered(origError);
-      console.warn = makeFiltered(origWarn);
-      console.log('[FileViewer] react-pdf console filter enabled');
-    } catch (e) {
-      console.warn('[FileViewer] failed injecting react-pdf runtime styles', e);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (console as any).error = makeFiltered(origError);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (console as any).warn = makeFiltered(origWarn);
+    } catch {
+      // Ignore setup errors
     }
   }, []);
 
@@ -427,16 +415,10 @@ export default function FileViewer({
   };
 
   const handleRename = (newName: string) => {
-    console.log('FileViewer handleRename called with:', newName);
-    console.log('onRename prop exists?', !!onRename);
-    console.log('fileId:', fileId);
-    
     if (onRename) {
       onRename(fileId, newName);
-      console.log('onRename callback executed');
-    } else {
-      console.warn('onRename prop not provided to FileViewer!');
-    }
+      } else {
+      }
     setShowRenameModal(false);
   };
 
@@ -474,13 +456,13 @@ export default function FileViewer({
       document.documentElement.requestFullscreen().then(() => {
         setIsFullscreen(true);
       }).catch(err => {
-        console.error('Error attempting to enable fullscreen:', err);
+        
       });
     } else {
       document.exitFullscreen().then(() => {
         setIsFullscreen(false);
       }).catch(err => {
-        console.error('Error attempting to exit fullscreen:', err);
+        
       });
     }
   };
@@ -583,8 +565,6 @@ export default function FileViewer({
 
   // Load text files and DOCX files
   useEffect(() => {
-    console.log('FileViewer useEffect - category:', category, 'fileUrl:', fileUrl);
-    
     if (category === 'text') {
       setLoading(true);
       fetch(fileUrl)
@@ -687,11 +667,10 @@ export default function FileViewer({
             setLoading(false);
             
             if (result.messages && result.messages.length > 0) {
-              console.log('DOCX conversion messages:', result.messages);
-            }
+              }
           })
           .catch((err: Error) => {
-            console.error('DOCX loading error:', err);
+            
             setError('Failed to load DOCX file: ' + err.message);
             setLoading(false);
           });
@@ -752,7 +731,7 @@ export default function FileViewer({
             setLoading(false);
           })
           .catch((err: Error) => {
-            console.error('PPTX loading error:', err);
+            
             setError('Failed to load PPTX file: ' + err.message);
             setLoading(false);
           });
@@ -796,7 +775,7 @@ export default function FileViewer({
               });
           })
           .catch((err: Error) => {
-            console.error('XLSX loading error:', err);
+            
             setError('Failed to load XLSX file: ' + err.message);
             setLoading(false);
           });
@@ -825,8 +804,6 @@ export default function FileViewer({
       return;
     }
 
-    console.log(`🔍 Searching for: "${searchQuery}" in ${category.toUpperCase()}`);
-
     setTimeout(() => {
       // Clear old highlights
       document.querySelectorAll('.search-highlight').forEach(el => {
@@ -845,15 +822,14 @@ export default function FileViewer({
           const textSpans = textLayer.querySelectorAll('span');
           const searchLower = searchQuery.toLowerCase().trim();
 
-          textSpans.forEach((span) => {
+          textSpans.forEach((span: Element) => {
             const text = span.textContent || '';
             const textLower = text.toLowerCase();
             
             if (textLower.includes(searchLower)) {
               matches.push({pageNum, matchIndex: globalMatchIndex++});
               span.classList.add('search-highlight');
-              console.log(`✅ Match #${globalMatchIndex} on page ${pageNum}: "${text}"`);
-            }
+              }
           });
         }
       } else if (category === 'docx' || category === 'pptx' || category === 'xlsx') {
@@ -884,8 +860,7 @@ export default function FileViewer({
                 parent.replaceChild(span, node);
                 
                 matches.push({pageNum, matchIndex: globalMatchIndex++});
-                console.log(`✅ ${category.toUpperCase()} Match #${globalMatchIndex} on page ${pageNum}: "${text.substring(0, 50)}..."`);
-              }
+                }
             }
           }
         }
@@ -897,12 +872,10 @@ export default function FileViewer({
       // Jump to first match
       if (matches.length > 0) {
         const firstMatch = matches[0];
-        console.log(`🎯 Jumping to page ${firstMatch.pageNum}`);
         setPageNumber(firstMatch.pageNum);
         jumpToPage(firstMatch.pageNum);
       } else {
-        console.log('❌ No matches found');
-      }
+        }
     }, 300);
 
   }, [searchQuery, category, numPages, isDocumentViewer]);
@@ -918,15 +891,12 @@ export default function FileViewer({
       const pageEl = document.querySelector(`[data-page-number="${pageNum}"]`) as HTMLElement;
       
       if (!pageEl) {
-        console.warn(`⚠️ Page ${pageNum} not found`);
         setIsManuallyScrolling(false);
         return;
       }
       
       // Get the absolute position of the page relative to the container's scroll area
       const scrollPosition = pageEl.offsetTop - 24; // Subtract the py-6 (24px) padding
-      
-      console.log(`📍 ${category.toUpperCase()} Page ${pageNum} - offsetTop: ${pageEl.offsetTop}, scrolling to: ${scrollPosition}`);
       
       // Scroll TO this absolute position with AUTO (instant) not smooth
       container.scrollTo({
@@ -943,11 +913,9 @@ export default function FileViewer({
     if (searchMatches.length === 0) return;
     const nextIndex = (currentMatchIndex + 1) % searchMatches.length;
     
-    console.log(`➡️ Next match: ${nextIndex + 1} of ${searchMatches.length}`);
     setCurrentMatchIndex(nextIndex);
     
     const match = searchMatches[nextIndex];
-    console.log(`📄 Going to page ${match.pageNum}`);
     setPageNumber(match.pageNum);
     jumpToPage(match.pageNum);
   };
@@ -957,11 +925,9 @@ export default function FileViewer({
     if (searchMatches.length === 0) return;
     const prevIndex = currentMatchIndex - 1 < 0 ? searchMatches.length - 1 : currentMatchIndex - 1;
     
-    console.log(`⬅️ Previous match: ${prevIndex + 1} of ${searchMatches.length}`);
     setCurrentMatchIndex(prevIndex);
     
     const match = searchMatches[prevIndex];
-    console.log(`📄 Going to page ${match.pageNum}`);
     setPageNumber(match.pageNum);
     jumpToPage(match.pageNum);
   };
@@ -974,7 +940,7 @@ export default function FileViewer({
     
     // Use Intersection Observer - this automatically handles viewport changes
     const observer = new IntersectionObserver(
-      (entries) => {
+      (entries: IntersectionObserverEntry[]) => {
         // Skip if user is manually scrolling
         if (isManuallyScrolling) return;
         
@@ -1018,7 +984,6 @@ export default function FileViewer({
   }, [isDocumentViewer, numPages, isManuallyScrolling]);
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number}) {
-    console.log('PDF loaded successfully! Pages:', numPages);
     setNumPages(numPages);
     setLoading(false);
     setPageNumber(1); // Reset to page 1
@@ -1035,18 +1000,16 @@ export default function FileViewer({
             try {
               thumbnails.set(i, canvas.toDataURL('image/jpeg', 0.3));
             } catch (err) {
-              console.warn(`Failed to capture thumbnail for page ${i}`);
-            }
+              }
           }
         }
         setPageThumbnails(thumbnails);
-        console.log(`📸 Captured ${thumbnails.size} thumbnails`);
-      }, 1000);
+        }, 1000);
     }, 100);
   }
 
   function onDocumentLoadError(error: Error) {
-    console.error('PDF load error:', error);
+    
     setError('Failed to load PDF document. ' + error.message);
     setLoading(false);
   }
@@ -1088,15 +1051,15 @@ export default function FileViewer({
 
   const getFileIcon = () => {
     switch (category) {
-      case 'pdf': return '📄';
-      case 'docx': return '📘';
-      case 'xlsx': return '📊';
-      case 'pptx': return '📽️';
-      case 'image': return '🖼️';
-      case 'video': return '🎥';
-      case 'audio': return '🎵';
-      case 'text': return '📝';
-      default: return '📎';
+      case 'pdf': return '/encodex-file.svg';
+      case 'docx': return '/encodex-file.svg';
+      case 'xlsx': return '/encodex-spreadsheet.svg';
+      case 'pptx': return '/encodex-file.svg';
+      case 'image': return '/encodex-image.svg';
+      case 'video': return '/encodex-video.svg';
+      case 'audio': return '/encodex-audio.svg';
+      case 'text': return '/encodex-file.svg';
+      default: return '/encodex-paperclip.svg';
     }
   };
 
@@ -1104,7 +1067,7 @@ export default function FileViewer({
     if (loading) {
       return (
         <div className="text-white text-center">
-          <div className="animate-spin w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+          <div className="animate-spin w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full mx-auto mb-4"></div>
           <p>Loading...</p>
         </div>
       );
@@ -1113,7 +1076,11 @@ export default function FileViewer({
     if (error) {
       return (
         <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-6 max-w-md text-center">
-          <div className="text-4xl mb-4">⚠️</div>
+          <div className="flex justify-center mb-4">
+            <svg className="w-10 h-10 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
           <p className="text-red-400 font-semibold mb-2">Error</p>
           <p className="text-gray-300 text-sm">{error}</p>
           <div className="mt-4">
@@ -1156,13 +1123,17 @@ export default function FileViewer({
               onLoadError={onDocumentLoadError}
               loading={
                 <div className="text-white text-center py-20">
-                  <div className="animate-spin w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                  <div className="animate-spin w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full mx-auto mb-4"></div>
                   <p>Loading PDF...</p>
                 </div>
               }
               error={
                 <div className="bg-red-900/20 border border-red-500/50 rounded-lg p-6 max-w-md text-center mx-auto">
-                  <div className="text-4xl mb-4">⚠️</div>
+                  <div className="flex justify-center mb-4">
+                    <svg className="w-10 h-10 text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                  </div>
                   <p className="text-red-400 font-semibold mb-2">Failed to load PDF</p>
                   <p className="text-gray-300 text-sm mb-4">Try refreshing the page.</p>
                   <button
@@ -1189,7 +1160,7 @@ export default function FileViewer({
                       renderAnnotationLayer={true}
                       rotate={rotation}
                       onRenderError={(err) => {
-                        console.error('[FileViewer] Page render error', index + 1, err);
+                        
                         setError('Failed to render PDF page. ' + (err?.message || ''));
                       }}
                     />
@@ -1292,7 +1263,7 @@ export default function FileViewer({
             <a
               href={fileUrl}
               download={fileName}
-              className="inline-block px-8 py-3 bg-teal-500 hover:bg-teal-600 text-white rounded-lg transition-colors font-semibold"
+              className="inline-block px-8 py-3 bg-orange-500 hover:bg-orange-600 text-white rounded-lg transition-colors font-semibold"
             >
               Download File
             </a>
@@ -1772,7 +1743,6 @@ export default function FileViewer({
                       <button
                         key={page}
                         onClick={() => {
-                          console.log(`🖱️ Sidebar clicked: Page ${page}`);
                           setPageNumber(page);
                           jumpToPage(page);
                         }}
@@ -1804,7 +1774,6 @@ export default function FileViewer({
                       <button
                         key={page}
                         onClick={() => {
-                          console.log(`🖱️ Sidebar clicked: Page ${page}`);
                           setPageNumber(page);
                           jumpToPage(page);
                         }}
@@ -1905,7 +1874,7 @@ export default function FileViewer({
                 step="25"
                 value={zoom}
                 onChange={(e) => setZoom(Number(e.target.value))}
-                className="w-32 accent-teal-500"
+                className="w-32 accent-orange-500"
               />
 
               {/* Zoom In */}

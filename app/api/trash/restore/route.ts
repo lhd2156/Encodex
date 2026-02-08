@@ -36,8 +36,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    console.log(`♻️ [TRASH_RESTORE] Restoring ${fileIds.length} files for ${userEmail}`);
-
     // Restore files from trash
     const result = await prisma.file.updateMany({
       where: {
@@ -54,8 +52,6 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    console.log(`✅ [TRASH_RESTORE] Updated ${result.count} files to isDeleted=false`);
-
     // For each file, remove from ALL recipients' temp_deleted lists (if shared)
     for (const fileId of fileIds) {
       const deleteResult = await prisma.tempDeletedShare.deleteMany({
@@ -65,8 +61,7 @@ export async function POST(req: NextRequest) {
       });
       
       if (deleteResult.count > 0) {
-        console.log(`📤 [TRASH_RESTORE] Removed file ${fileId} from ${deleteResult.count} recipients' temp_deleted lists`);
-      }
+        }
     }
 
     return NextResponse.json({
@@ -75,7 +70,7 @@ export async function POST(req: NextRequest) {
       count: result.count,
     });
   } catch (error) {
-    console.error('❌ [TRASH_RESTORE] Error restoring from trash:', error);
+    
     return NextResponse.json(
       { error: 'Failed to restore from trash' },
       { status: 500 }
