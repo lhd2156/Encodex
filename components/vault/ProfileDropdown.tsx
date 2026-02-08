@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import Image from 'next/image';
-import { ensureRecoveryKeyExists, downloadRecoveryKey } from '@/lib/recoveryKey';
+import {downloadRecoveryKey } from '@/lib/recoveryKey';
 
 interface ProfileDropdownProps {
   userName: string;
