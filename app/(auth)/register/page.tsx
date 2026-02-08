@@ -7,7 +7,8 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSession } from "@/lib/session";
 import { storePasswordHash } from "@/lib/crypto";
-import { ensureRecoveryKeyExists, downloadRecoveryKey } from "@/lib/recoveryKey";
+// import { ensureRecoveryKeyExists, downloadRecoveryKey } from "@/lib/recoveryKey";
+import { downloadRecoveryKey, isValidRecoveryKey } from "@/lib/recoveryKey";
 import { useVaultContext } from "@/lib/vault/vault-context";
 
 import AuthLayout from "@/components/auth/AuthLayout";
@@ -139,7 +140,7 @@ export default function RegisterPage() {
       await storePasswordHash(email, password);
 
       // GENERATE RECOVERY KEY
-      const key = ensureRecoveryKeyExists(email);
+      const key = data.recoveryKey;
       setRecoveryKey(key);
       setNewUserEmail(email);
       setNewUserFirstName(first);

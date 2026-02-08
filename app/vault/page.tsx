@@ -426,22 +426,37 @@ export default function VaultPage() {
     setShowProfileDropdown(false);
   };
 
-  // MODIFIED: handleRecoveryKey now shows page-level modal
-  const handleRecoveryKey = () => {
+  // NEW (CORRECT):
+  const handleRecoveryKey = async () => {
     setShowProfileDropdown(false);
     
-    // Get existing recovery key from localStorage
-    const keyStorageKey = `recovery_key_${userEmail}`;
-    const key = localStorage.getItem(keyStorageKey) || '';
+    const authToken = sessionStorage.getItem('auth_token');
     
-    if (!key) {
-      alert('No recovery key found. Recovery keys are generated during account registration.');
+    if (!authToken) {
+      alert('Not authenticated');
       return;
     }
-    
-    setRecoveryKey(key);
-    setCopied(false);
-    setShowRecoveryKeyModal(true);
+
+    try {
+      const response = await fetch('/api/auth/recovery-key', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.recoveryKey) {
+        setRecoveryKey(data.recoveryKey);
+        setCopied(false);
+        setShowRecoveryKeyModal(true);
+      } else {
+        alert('No recovery key found. Recovery keys are generated during account registration.');
+      }
+    } catch (error) {
+      console.error('Failed to fetch recovery key:', error);
+      alert('Failed to load recovery key. Please try again.');
+    }
   };
 
   const requestPermanentDelete = (id: string) => {

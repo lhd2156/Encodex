@@ -290,30 +290,34 @@ export default function SettingsPage() {
     }
   };
 
-  const handleShowRecoveryKey = () => {
-    // Use normalized (lowercase) email for lookup
-    const normalizedEmail = userEmail.toLowerCase();
-    let key = localStorage.getItem(`recovery_key_${normalizedEmail}`);
+  const handleShowRecoveryKey = async () => {
+    const authToken = sessionStorage.getItem('auth_token');
     
-    // Fallback: try original casing (for backwards compatibility)
-    if (!key) {
-      key = localStorage.getItem(`recovery_key_${userEmail}`);
-      
-      // If found, migrate to normalized key
-      if (key) {
-        localStorage.setItem(`recovery_key_${normalizedEmail}`, key);
-        localStorage.removeItem(`recovery_key_${userEmail}`);
-        }
-    }
-
-    if (!key) {
-      setErrorMessage('No recovery key found. This may happen if you registered on a different browser.');
+    if (!authToken) {
+      setErrorMessage('Not authenticated');
       return;
     }
 
-    setRecoveryKey(key);
-    setCopied(false);
-    setShowRecoveryKeyModal(true);
+    try {
+      const response = await fetch('/api/auth/recovery-key', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.recoveryKey) {
+        setRecoveryKey(data.recoveryKey);
+        setCopied(false);
+        setShowRecoveryKeyModal(true);
+      } else {
+        setErrorMessage('No recovery key found for your account.');
+      }
+    } catch (error) {
+      console.error('Failed to fetch recovery key:', error);
+      setErrorMessage('Failed to load recovery key. Please try again.');
+    }
   };
 
   const handleCopyRecoveryKey = () => {

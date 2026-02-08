@@ -62,24 +62,39 @@ export default function ProfileDropdown({
   const userInitial = (userName && userName.length > 0) ? userName.charAt(0).toUpperCase() : 'U';
   const formattedEmail = formatEmail(userEmail);
 
-  const handleRecoveryKeyClick = () => {
-    // Try to get existing key
-    const keyStorageKey = `recovery_key_${userEmail}`;
-    const key = localStorage.getItem(keyStorageKey) || '';
+  // Around line 87 in ProfileDropdown
+  const handleRecoveryKeyClick = async () => {
+    const authToken = sessionStorage.getItem('auth_token');
     
-    if (!key) {
-      // No key exists - alert the user
-      alert('No recovery key found. Recovery keys are generated during account registration. If you need a recovery key, please contact support or create a new account.');
+    if (!authToken) {
+      alert('Not authenticated');
       return;
     }
-    
-    setRecoveryKey(key);
-    setShowRecoveryModal(true);
-    setJustGenerated(false); // This is an existing key, not newly generated
-    setCopied(false);
-    
-    if (onRecoveryKey) {
-      onRecoveryKey();
+
+    try {
+      const response = await fetch('/api/auth/recovery-key', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.recoveryKey) {
+        setRecoveryKey(data.recoveryKey);
+        setShowRecoveryModal(true);
+        setJustGenerated(false);
+        setCopied(false);
+        
+        if (onRecoveryKey) {
+          onRecoveryKey();
+        }
+      } else {
+        alert('No recovery key found. Recovery keys are generated during account registration.');
+      }
+    } catch (error) {
+      console.error('Failed to fetch recovery key:', error);
+      alert('Failed to load recovery key. Please try again.');
     }
   };
 

@@ -1,6 +1,9 @@
 // lib/recoveryKey.ts
 // Recovery Key Management Utilities
 
+import { prisma } from '@/lib/db';
+import crypto from 'crypto';
+
 /**
  * Generates a unique recovery key for a user account
  * This should be called ONCE during user registration
@@ -20,64 +23,66 @@ export function generateRecoveryKey(): string {
 }
 
 /**
- * Stores the recovery key for a user
- * Called during registration
+ * Hash the recovery key before storing in database
  */
-export function storeRecoveryKey(userEmail: string, recoveryKey: string): void {
-  // Always use lowercase email for storage key
-  const normalizedEmail = userEmail.toLowerCase();
-  const keyStorageKey = `recovery_key_${normalizedEmail}`;
-  localStorage.setItem(keyStorageKey, recoveryKey);
-  }
+async function hashRecoveryKey(recoveryKey: string): Promise<string> {
+  const hash = crypto.createHash('sha256').update(recoveryKey).digest('hex');
+  return hash;
+}
 
 /**
- * Retrieves the recovery key for a user
+ * Stores BOTH the recovery key AND its hash
+ * Called during registration
+ */
+export async function storeRecoveryKey(userEmail: string, recoveryKey: string): Promise<void> {
+  const normalizedEmail = userEmail.toLowerCase();
+  const hashedKey = await hashRecoveryKey(recoveryKey);
+  
+  await prisma.user.update({
+    where: { email: normalizedEmail },
+    data: {
+      recoveryKeyHash: hashedKey,
+      recoveryKey: recoveryKey  // Store the actual key too!
+    }
+  });
+}
+
+/**
+ * Gets the RAW recovery key for a user
  * Returns null if no key exists
  */
-export function getRecoveryKey(userEmail: string): string | null {
-  // Always use lowercase email for lookup
+export async function getRecoveryKey(userEmail: string): Promise<string | null> {
   const normalizedEmail = userEmail.toLowerCase();
-  const keyStorageKey = `recovery_key_${normalizedEmail}`;
   
-  // Try normalized key first
-  let key = localStorage.getItem(keyStorageKey);
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { recoveryKey: true }
+  });
   
-  // Fallback: try original casing (for backwards compatibility)
-  if (!key) {
-    const originalKey = `recovery_key_${userEmail}`;
-    key = localStorage.getItem(originalKey);
-    
-    // If found with original casing, migrate to normalized
-    if (key) {
-      localStorage.setItem(keyStorageKey, key);
-      localStorage.removeItem(originalKey);
-      }
-  }
+  return user?.recoveryKey || null;
+}
+
+/**
+ * Retrieves the recovery key hash for a user
+ * Returns null if no key exists
+ */
+export async function getRecoveryKeyHash(userEmail: string): Promise<string | null> {
+  const normalizedEmail = userEmail.toLowerCase();
   
-  return key;
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { recoveryKeyHash: true }
+  });
+  
+  return user?.recoveryKeyHash || null;
 }
 
 /**
  * Checks if a user has a recovery key
  */
-export function hasRecoveryKey(userEmail: string): boolean {
-  return getRecoveryKey(userEmail) !== null;
-}
-
-/**
- * Creates a recovery key during registration if one doesn't exist
- * This is the main function to call during user registration
- */
-export function ensureRecoveryKeyExists(userEmail: string): string {
-  let key = getRecoveryKey(userEmail);
-  
-  if (!key) {
-    key = generateRecoveryKey();
-    storeRecoveryKey(userEmail, key);
-    } else {
-    }
-  
-  return key;
+export async function hasRecoveryKey(userEmail: string): Promise<boolean> {
+  const key = await getRecoveryKey(userEmail);
+  return key !== null;
 }
 
 /**
@@ -111,8 +116,7 @@ ENCODEX - Secure Cloud Storage
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-  
-  }
+}
 
 /**
  * Validates a recovery key format
@@ -124,10 +128,21 @@ export function isValidRecoveryKey(key: string): boolean {
 }
 
 /**
- * Verifies if a provided recovery key matches the stored one
+ * Verifies if a provided recovery key matches the stored hash
  * Used during account recovery process
  */
-export function verifyRecoveryKey(userEmail: string, providedKey: string): boolean {
-  const storedKey = getRecoveryKey(userEmail);
-  return storedKey === providedKey;
+export async function verifyRecoveryKey(userEmail: string, providedKey: string): Promise<boolean> {
+  const normalizedEmail = userEmail.toLowerCase();
+  
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+    select: { recoveryKeyHash: true }
+  });
+
+  if (!user || !user.recoveryKeyHash) {
+    return false;
+  }
+
+  const hashedProvidedKey = await hashRecoveryKey(providedKey);
+  return hashedProvidedKey === user.recoveryKeyHash;
 }
