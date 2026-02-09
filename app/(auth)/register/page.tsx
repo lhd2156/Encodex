@@ -1,5 +1,5 @@
 // FILE LOCATION: app/register/page.tsx
-// FIXED: Uses API + keeps your recovery key modal
+// FIXED: Responsive design matching login page with proper alignment
 
 "use client";
 
@@ -189,22 +189,28 @@ export default function RegisterPage() {
 
   return (
     <div className="h-screen flex flex-col bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      <header className="flex-shrink-0 flex justify-between items-center px-4 sm:px-8 lg:px-12 py-4 lg:py-6">
+      <header className="flex-shrink-0 flex justify-between items-center px-4 sm:px-6 md:px-8 lg:px-12 py-4 md:py-5 lg:py-6">
         <div 
           onClick={() => router.push('/start')} 
-          className="flex items-center gap-2 sm:gap-3 cursor-pointer"
+          className="flex items-center gap-2 sm:gap-2.5 md:gap-3 cursor-pointer"
         >
-          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-orange-500 flex items-center justify-center">
-            <Image src="/encodex-logo-lock.svg" alt="Encodex" width={24} height={24} className="sm:w-7 sm:h-7" />
+          <div className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-full bg-orange-500 flex items-center justify-center">
+            <Image 
+              src="/encodex-logo-lock.svg" 
+              alt="Encodex" 
+              width={24} 
+              height={24} 
+              className="w-5 h-5 sm:w-6 sm:h-6 md:w-7 md:h-7" 
+            />
           </div>
-          <span className="text-xl sm:text-[28px] font-semibold tracking-wide text-white">
+          <span className="text-lg sm:text-xl md:text-2xl lg:text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
         </div>
 
         <button
           onClick={() => router.push('/login')}
-          className="px-4 sm:px-6 py-2 sm:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-sm sm:text-base font-medium transition-colors cursor-pointer"
+          className="px-3 sm:px-4 md:px-5 lg:px-6 py-2 sm:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-xs sm:text-sm md:text-base font-medium transition-colors cursor-pointer"
         >
           Log in
         </button>
@@ -213,13 +219,13 @@ export default function RegisterPage() {
       <AuthLayout
         left={
           <AuthCard>
-            <h1 className="text-[24px] lg:text-[30px] text-center mb-6 lg:mb-10 text-white">
+            <h1 className="text-xl sm:text-2xl md:text-[26px] lg:text-[28px] text-center mb-4 sm:mb-5 md:mb-6 text-white font-semibold">
               Sign up for a{" "}
               <span className="text-orange-500">free</span> account
             </h1>
 
-            <div className="flex flex-col gap-5 lg:gap-6">
-              <div className="grid grid-cols-2 gap-4 lg:gap-6">
+            <div className="flex flex-col gap-3.5 sm:gap-4">
+              <div className="grid grid-cols-2 gap-3 sm:gap-4">
                 <AuthInput
                   label="First name"
                   inputRef={firstNameRef as React.RefObject<HTMLInputElement>}
@@ -239,7 +245,7 @@ export default function RegisterPage() {
               />
 
               {emailAlreadyUsed && (
-                <div className="text-red-500 text-sm -mt-4">
+                <div className="text-red-500 text-xs sm:text-sm -mt-2">
                   Email already has been used
                 </div>
               )}
@@ -258,39 +264,41 @@ export default function RegisterPage() {
             </div>
 
             {/* Agreement Checkboxes */}
-            <div className="mt-4 lg:mt-6 space-y-2 lg:space-y-3">
-              <label className="flex items-start gap-3 cursor-pointer">
+            <div className="mt-3 sm:mt-4 space-y-2">
+              <label className="flex items-start gap-2 sm:gap-2.5 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={agreedDataLoss}
                   onChange={(e) => setAgreedDataLoss(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer"
+                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer flex-shrink-0"
                 />
-                <span className="text-xs lg:text-sm text-neutral-400">
+                <span className="text-[10px] sm:text-xs text-neutral-400 leading-snug">
                   I understand that <span className="text-red-400 font-semibold">if I lose my password, I may lose my data</span>. Read more about Encodex's end-to-end encryption.
                 </span>
               </label>
               
-              <label className="flex items-start gap-3 cursor-pointer">
+              <label className="flex items-start gap-2 sm:gap-2.5 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={agreedTerms}
                   onChange={(e) => setAgreedTerms(e.target.checked)}
-                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer"
+                  className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer flex-shrink-0"
                 />
-                <span className="text-xs lg:text-sm text-neutral-400">
+                <span className="text-[10px] sm:text-xs text-neutral-400 leading-snug">
                   I have read, understood, and agree to Encodex's <span className="text-orange-400 hover:underline cursor-pointer">Terms of Service</span>.
                 </span>
               </label>
             </div>
 
-            <div className="mt-4 lg:mt-6 flex justify-end">
-              <AuthButton onClick={handleRegister} disabled={isLoading || !agreedDataLoss || !agreedTerms}>
-                {isLoading ? 'Creating...' : 'Sign up →'}
-              </AuthButton>
+            <div className="mt-3 sm:mt-4 flex justify-end">
+              <div className="w-full sm:w-auto sm:min-w-[140px] md:min-w-[160px]">
+                <AuthButton onClick={handleRegister} disabled={isLoading || !agreedDataLoss || !agreedTerms}>
+                  {isLoading ? 'Creating...' : 'Sign up →'}
+                </AuthButton>
+              </div>
             </div>
 
-            <p className="text-sm text-center mt-4 lg:mt-6 text-neutral-400">
+            <p className="text-xs sm:text-sm text-center mt-3 sm:mt-4 text-neutral-400">
               Already have an account?{" "}
               <span 
                 onClick={() => router.push('/login')} 
@@ -328,15 +336,16 @@ export default function RegisterPage() {
           >
             <div
               style={{
-                width: '1050px',
-                maxWidth: '95vw',
-                height: '650px',
+                width: '100%',
+                maxWidth: '1050px',
+                height: 'auto',
                 maxHeight: '90vh',
                 background: 'linear-gradient(to bottom, rgb(30 58 138), rgb(23 37 84))',
                 borderRadius: '0.5rem',
                 border: '1px solid rgba(29 78 216 / 0.5)',
                 boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
                 position: 'relative',
+                overflowY: 'auto',
               }}
             >
               <div
@@ -345,15 +354,14 @@ export default function RegisterPage() {
                   flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  height: '100%',
-                  padding: '3rem 4rem',
+                  padding: '2rem 1.5rem',
                 }}
               >
-                <div style={{ marginBottom: '2rem' }}>
+                <div style={{ marginBottom: '1.5rem' }}>
                   <div
                     style={{
-                      width: '8rem',
-                      height: '8rem',
+                      width: '6rem',
+                      height: '6rem',
                       background: 'linear-gradient(to bottom right, rgba(59 130 246 / 0.2), rgba(37 99 235 / 0.2))',
                       borderRadius: '1rem',
                       display: 'flex',
@@ -362,17 +370,17 @@ export default function RegisterPage() {
                       border: '1px solid rgba(59 130 246 / 0.3)',
                     }}
                   >
-                    <svg style={{ width: '4rem', height: '4rem', color: '#fbbf24' }} fill="currentColor" viewBox="0 0 24 24">
+                    <svg style={{ width: '3rem', height: '3rem', color: '#fbbf24' }} fill="currentColor" viewBox="0 0 24 24">
                       <path d="M12.65 10C11.7 7.31 8.9 5.5 5.77 6.12c-2.29.46-4.15 2.29-4.63 4.58C.32 14.57 3.26 18 7 18c2.61 0 4.83-1.67 5.65-4H17v2c0 1.1.9 2 2 2s2-.9 2-2v-2c1.1 0 2-.9 2-2s-.9-2-2-2h-8.35zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
                     </svg>
                   </div>
                 </div>
 
-                <h2 style={{ fontSize: '1.875rem', fontWeight: 'bold', color: 'white', marginBottom: '1rem' }}>
+                <h2 style={{ fontSize: 'clamp(1.5rem, 4vw, 1.875rem)', fontWeight: 'bold', color: 'white', marginBottom: '0.75rem', textAlign: 'center' }}>
                   Account recovery
                 </h2>
                 
-                <p style={{ textAlign: 'center', color: '#d1d5db', marginBottom: '3rem', maxWidth: '42rem', lineHeight: '1.625' }}>
+                <p style={{ textAlign: 'center', color: '#d1d5db', marginBottom: '2rem', maxWidth: '42rem', lineHeight: '1.625', fontSize: 'clamp(0.875rem, 2vw, 1rem)', padding: '0 1rem' }}>
                   Export and save your recovery key to avoid your data becoming inaccessible should you ever lose your password or authenticator.{' '}
                   <span style={{ color: '#60a5fa', textDecoration: 'underline', cursor: 'pointer' }}>Learn more.</span>
                 </p>
@@ -384,17 +392,17 @@ export default function RegisterPage() {
                     background: 'rgba(23 37 84 / 0.5)',
                     border: '1px solid rgba(29 78 216 / 0.3)',
                     borderRadius: '0.5rem',
-                    padding: '2rem',
+                    padding: 'clamp(1rem, 3vw, 2rem)',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                     <div style={{ flex: 1 }}>
-                      <h3 style={{ fontSize: '1.125rem', fontWeight: '600', color: 'white', marginBottom: '0.75rem' }}>
+                      <h3 style={{ fontSize: 'clamp(1rem, 2.5vw, 1.125rem)', fontWeight: '600', color: 'white', marginBottom: '0.75rem' }}>
                         Export your recovery key
                       </h3>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <Image src="/encodex-key.svg" alt="Key" width={24} height={24} />
-                        <code style={{ color: '#fbbf24', fontSize: '1.25rem', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all' }}>
+                        <code style={{ color: '#fbbf24', fontSize: 'clamp(0.875rem, 2vw, 1.25rem)', fontFamily: 'monospace', letterSpacing: '0.05em', userSelect: 'all', wordBreak: 'break-all' }}>
                           {recoveryKey}
                         </code>
                       </div>
@@ -403,7 +411,7 @@ export default function RegisterPage() {
                     <button
                       onClick={handleDownload}
                       style={{
-                        marginLeft: '2rem',
+                        width: '100%',
                         padding: '0.75rem 2rem',
                         backgroundColor: '#F97316',
                         color: 'white',
@@ -412,7 +420,7 @@ export default function RegisterPage() {
                         border: 'none',
                         cursor: 'pointer',
                         boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.2)',
-                        fontSize: '1rem',
+                        fontSize: 'clamp(0.875rem, 2vw, 1rem)',
                         transition: 'all 0.2s',
                       }}
                       onMouseEnter={(e) => {
@@ -432,7 +440,7 @@ export default function RegisterPage() {
                     onClick={handleCopy}
                     style={{
                       marginTop: '1rem',
-                      fontSize: '0.875rem',
+                      fontSize: 'clamp(0.75rem, 1.5vw, 0.875rem)',
                       color: copied ? '#34d399' : '#60a5fa',
                       background: 'none',
                       border: 'none',
@@ -471,7 +479,7 @@ export default function RegisterPage() {
                 <button
                   onClick={handleContinueToVault}
                   style={{
-                    marginTop: '3rem',
+                    marginTop: '2rem',
                     padding: '0.875rem 3rem',
                     backgroundColor: '#F97316',
                     color: 'white',
@@ -479,7 +487,7 @@ export default function RegisterPage() {
                     fontWeight: '700',
                     border: 'none',
                     cursor: 'pointer',
-                    fontSize: '1.125rem',
+                    fontSize: 'clamp(1rem, 2vw, 1.125rem)',
                     boxShadow: '0 10px 15px -3px rgba(249 115 22 / 0.3)',
                     transition: 'all 0.2s',
                   }}

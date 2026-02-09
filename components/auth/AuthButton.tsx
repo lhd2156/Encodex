@@ -13,11 +13,13 @@ export default function AuthButton({
       onClick={onClick}
       disabled={disabled}
       className="
-        mt-10
         w-full
-        py-4
+        py-3
+        sm:py-3.5
+        md:py-4
         rounded-lg
-        text-lg
+        text-base
+        sm:text-lg
         font-medium
         bg-orange-500
         text-black
