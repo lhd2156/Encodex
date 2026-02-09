@@ -1,5 +1,5 @@
 // FILE LOCATION: app/login/page.tsx
-// UPDATED to use PostgreSQL backend API
+// FIXED: Responsive design with proper scaling at all zoom levels
 
 "use client";
 
@@ -120,22 +120,28 @@ export default function LoginPage() {
 
   return (
     <div className="h-screen flex flex-col bg-gradient-to-b from-slate-900 via-blue-950 to-slate-900 overflow-hidden">
-      <header className="flex-shrink-0 flex justify-between items-center px-4 sm:px-8 lg:px-12 py-4 lg:py-6">
+      <header className="flex-shrink-0 flex justify-between items-center px-3 sm:px-6 md:px-8 lg:px-12 py-3 md:py-4 lg:py-5">
         <div 
           onClick={() => router.push('/start')} 
-          className="flex items-center gap-2 sm:gap-3 cursor-pointer"
+          className="flex items-center gap-1.5 sm:gap-2.5 md:gap-3 cursor-pointer"
         >
-          <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-orange-500 flex items-center justify-center">
-            <Image src="/encodex-logo-lock.svg" alt="Encodex" width={24} height={24} className="sm:w-7 sm:h-7" />
+          <div className="w-7 h-7 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-full bg-orange-500 flex items-center justify-center">
+            <Image 
+              src="/encodex-logo-lock.svg" 
+              alt="Encodex" 
+              width={24} 
+              height={24} 
+              className="w-4 h-4 sm:w-6 sm:h-6 md:w-7 md:h-7" 
+            />
           </div>
-          <span className="text-xl sm:text-[28px] font-semibold tracking-wide text-white">
+          <span className="text-base sm:text-xl md:text-2xl lg:text-[28px] font-semibold tracking-wide text-white">
             Encodex
           </span>
         </div>
 
         <button
           onClick={() => router.push('/register')}
-          className="px-4 sm:px-6 py-2 sm:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-sm sm:text-base font-medium transition-colors cursor-pointer"
+          className="px-2.5 sm:px-4 md:px-5 lg:px-6 py-1.5 sm:py-2 md:py-2.5 rounded-lg bg-neutral-700 hover:bg-neutral-600 text-white text-xs sm:text-sm md:text-base font-medium transition-colors cursor-pointer"
         >
           Sign up
         </button>
@@ -144,11 +150,11 @@ export default function LoginPage() {
       <AuthLayout
         left={
           <AuthCard>
-            <h1 className="text-[28px] lg:text-[32px] text-center mb-8 lg:mb-10 text-white">
+            <h1 className="text-lg sm:text-xl md:text-2xl lg:text-[26px] text-center mb-3 sm:mb-4 md:mb-5 text-white font-semibold">
               Log in
             </h1>
 
-            <div className="flex flex-col gap-6 lg:gap-8">
+            <div className="flex flex-col gap-3 sm:gap-4 md:gap-5">
               <AuthInput
                 label="Your email address"
                 inputRef={emailRef as React.RefObject<HTMLInputElement>}
@@ -162,7 +168,7 @@ export default function LoginPage() {
               />
             </div>
 
-            <div className="flex justify-end text-sm text-neutral-400 mt-3 lg:mt-4">
+            <div className="flex justify-end text-[10px] sm:text-xs md:text-sm text-neutral-400 mt-2 sm:mt-2.5 md:mt-3">
               <span 
                 onClick={() => router.push('/forgot-password')} 
                 className="underline hover:text-neutral-300 transition-colors cursor-pointer"
@@ -171,32 +177,27 @@ export default function LoginPage() {
               </span>
             </div>
 
-            <div className="flex-grow min-h-4 lg:min-h-8" />
+            <div className="flex-grow min-h-2 sm:min-h-3 md:min-h-4" />
 
-            <div className="flex items-center justify-between">
-              <label
-                className="
-                  flex items-center gap-2
-                  text-sm text-neutral-400
-                  cursor-pointer
-                "
-              >
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3 mt-3 sm:mt-4">
+              <label className="flex items-center gap-2 text-[10px] sm:text-xs md:text-sm text-neutral-400 cursor-pointer">
                 <input 
                   type="checkbox" 
                   ref={rememberRef}
-                  className="w-4 h-4 rounded border-neutral-600 text-orange-500 cursor-pointer"
+                  className="w-4 h-4 min-w-[16px] min-h-[16px] rounded border-neutral-600 text-orange-500 cursor-pointer flex-shrink-0"
+                  style={{ accentColor: '#f97316' }}
                 />
-                Remember me
+                <span>Remember me</span>
               </label>
 
-              <div className="w-[180px] lg:w-[220px]">
+              <div className="w-full sm:w-auto sm:min-w-[130px] md:min-w-[150px]">
                 <AuthButton onClick={handleLogin} disabled={isLoading}>
                   {isLoading ? 'Logging in...' : 'Log in'}
                 </AuthButton>
               </div>
             </div>
 
-            <p className="text-sm text-center mt-6 lg:mt-8 text-neutral-400">
+            <p className="text-[10px] sm:text-xs md:text-sm text-center mt-3 sm:mt-4 md:mt-5 text-neutral-400">
               Don't have an account?{" "}
               <span 
                 onClick={() => router.push('/register')} 

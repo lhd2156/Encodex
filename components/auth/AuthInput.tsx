@@ -10,8 +10,8 @@ export default function AuthInput({
   inputRef,
 }: AuthInputProps) {
   return (
-    <div className="flex flex-col gap-2">
-      <label className="text-sm text-neutral-300">
+    <div className="flex flex-col gap-1.5 sm:gap-2">
+      <label className="text-xs sm:text-sm text-neutral-300">
         {label}
       </label>
 
@@ -22,6 +22,9 @@ export default function AuthInput({
           bg-transparent
           border-b
           py-2
+          sm:py-2.5
+          text-sm
+          sm:text-base
           text-white
           outline-none
           transition
