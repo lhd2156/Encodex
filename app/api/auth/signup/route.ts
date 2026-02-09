@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     const salt = Buffer.from(crypto.getRandomValues(new Uint8Array(16)));
     const passwordHash = await hashPassword(password);
 
-    console.log('🔵 About to create user...');
+    console.log('About to create user...');
     
     // Create user
     const user = await prisma.user.create({
@@ -51,21 +51,21 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    console.log('✅ User created:', user.email);
+    console.log('User created:', user.email);
 
     // Generate recovery key
-    console.log('🔵 Generating recovery key...');
+    console.log('Generating recovery key...');
     const recoveryKey = generateRecoveryKey();
-    console.log('✅ Recovery key generated');
+    console.log('Recovery key generated');
 
-    // Store recovery key in database - THIS IS THE IMPORTANT PART!
-    console.log('🔵 About to store recovery key...');
+    // Store recovery key in database
+    console.log('About to store recovery key...');
     await storeRecoveryKey(user.email, recoveryKey);
-    console.log('✅ Recovery key stored');
+    console.log('Recovery key stored');
 
     const token = createToken(user.id, user.email);
 
-    console.log('✅ Signup complete for:', user.email);
+    console.log('Signup complete for:', user.email);
 
     return NextResponse.json({
       success: true,
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('❌ Signup error:', error);
+    console.error('Signup error:', error);
     console.error('Error details:', JSON.stringify(error, null, 2));
     return NextResponse.json(
       { error: 'Internal server error' },

@@ -426,7 +426,6 @@ export default function VaultPage() {
     setShowProfileDropdown(false);
   };
 
-  // NEW (CORRECT):
   const handleRecoveryKey = async () => {
     setShowProfileDropdown(false);
     
