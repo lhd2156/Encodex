@@ -7,7 +7,6 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSession } from "@/lib/session";
 import { storePasswordHash } from "@/lib/crypto";
-// import { ensureRecoveryKeyExists, downloadRecoveryKey } from "@/lib/recoveryKey";
 import { downloadRecoveryKey, isValidRecoveryKey } from "@/lib/recoveryKey";
 import { useVaultContext } from "@/lib/vault/vault-context";
 
