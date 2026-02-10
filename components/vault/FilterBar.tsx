@@ -28,10 +28,19 @@ export default function FilterBar({
   currentTab = 'vault'
 }: FilterBarProps) {
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
   const typeButtonRef = useRef<HTMLButtonElement>(null);
   const typeMenuRef = useRef<HTMLDivElement>(null);
   const modifiedButtonRef = useRef<HTMLButtonElement>(null);
   const modifiedMenuRef = useRef<HTMLDivElement>(null);
+
+  // Detect mobile
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -69,21 +78,21 @@ export default function FilterBar({
   const hasActiveFilters = activeFilters.type !== 'All' || activeFilters.modified !== 'Any time';
 
   return (
-    <div className="flex items-center justify-between px-8 py-4 border-b border-blue-700/20 bg-blue-950/10">
-      <div className="flex items-center gap-3">
+    <div className={`flex ${isMobile ? 'flex-col gap-2' : 'items-center justify-between'} ${isMobile ? 'px-3 py-3' : 'px-4 sm:px-8 py-3 sm:py-4'} border-b border-blue-700/20 bg-blue-950/10`}>
+      <div className={`flex items-center ${isMobile ? 'flex-wrap' : ''} gap-2`}>
         {/* Type Filter */}
         <div className="relative">
           <button
             ref={typeButtonRef}
             onClick={() => setOpenDropdown(openDropdown === 'type' ? null : 'type')}
-            className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-2 transition-colors min-w-[120px] justify-between ${
+            className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'} rounded-lg border font-medium flex items-center gap-2 transition-colors ${isMobile ? 'min-w-[100px]' : 'min-w-[120px]'} justify-between ${
               activeFilters.type !== 'All'
                 ? 'bg-orange-500/20 text-orange-400 border-orange-400/50'
                 : 'bg-transparent text-white border-gray-600 hover:bg-blue-800/20'
             }`}
           >
-            {activeFilters.type}
-            <span className="text-xs">{openDropdown === 'type' ? '▲' : '▼'}</span>
+            <span className="truncate">{activeFilters.type}</span>
+            <span className="text-xs flex-shrink-0">{openDropdown === 'type' ? '▲' : '▼'}</span>
           </button>
 
           {openDropdown === 'type' && (
@@ -113,14 +122,14 @@ export default function FilterBar({
           <button
             ref={modifiedButtonRef}
             onClick={() => setOpenDropdown(openDropdown === 'modified' ? null : 'modified')}
-            className={`px-4 py-2 rounded-lg border text-sm font-medium flex items-center gap-2 transition-colors min-w-[140px] justify-between ${
+            className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'} rounded-lg border font-medium flex items-center gap-2 transition-colors ${isMobile ? 'min-w-[110px]' : 'min-w-[140px]'} justify-between ${
               activeFilters.modified !== 'Any time'
                 ? 'bg-orange-500/20 text-orange-400 border-orange-400/50'
                 : 'bg-transparent text-white border-gray-600 hover:bg-blue-800/20'
             }`}
           >
-            {activeFilters.modified}
-            <span className="text-xs">{openDropdown === 'modified' ? '▲' : '▼'}</span>
+            <span className="truncate">{activeFilters.modified}</span>
+            <span className="text-xs flex-shrink-0">{openDropdown === 'modified' ? '▲' : '▼'}</span>
           </button>
 
           {openDropdown === 'modified' && (
@@ -149,7 +158,7 @@ export default function FilterBar({
         {hasActiveFilters && (
           <button
             onClick={clearFilters}
-            className="px-4 py-2 text-sm font-medium text-orange-400 hover:text-orange-300 hover:underline transition-colors"
+            className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-4 py-2 text-sm'} font-medium text-orange-400 hover:text-orange-300 hover:underline transition-colors whitespace-nowrap`}
           >
             Clear filters
           </button>
@@ -158,17 +167,17 @@ export default function FilterBar({
 
       {/* Right side actions */}
       {hasFiles && (
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center ${isMobile ? 'flex-wrap' : ''} gap-2`}>
           {/* Select All - Vault */}
           {(['vault', 'shared', 'recent', 'favorites'] as string[]).includes(currentTab) && onSelectAll && (
             <button
               onClick={onSelectAll}
-              className="px-4 py-2 rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 text-sm font-semibold transition-colors flex items-center gap-2"
+              className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm'} rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 font-semibold transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap`}
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`${isMobile ? 'w-4 h-4' : 'w-4 sm:w-5 h-4 sm:h-5'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
               </svg>
-              Select all
+              <span className="hidden sm:inline">Select all</span>
             </button>
           )}
 
@@ -178,34 +187,34 @@ export default function FilterBar({
               {onSelectAll && (
                 <button
                   onClick={onSelectAll}
-                  className="px-4 py-2 rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 text-sm font-semibold transition-colors flex items-center gap-2"
+                  className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm'} rounded-lg bg-blue-800/20 hover:bg-blue-800/30 text-blue-300 font-semibold transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap`}
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className={`${isMobile ? 'w-4 h-4' : 'w-4 sm:w-5 h-4 sm:h-5'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                   </svg>
-                  Select all
+                  <span className="hidden sm:inline">Select all</span>
                 </button>
               )}
               {onRecoverAll && (
                 <button
                   onClick={onRecoverAll}
-                  className="px-4 py-2 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 text-sm font-semibold transition-colors flex items-center gap-2"
+                  className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm'} rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-400 font-semibold transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap`}
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className={`${isMobile ? 'w-4 h-4' : 'w-4 sm:w-5 h-4 sm:h-5'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h12a4 4 0 110 8H7M3 10l4-4M3 10l4 4" />
                   </svg>
-                  Recover all
+                  <span className="hidden sm:inline">Recover all</span>
                 </button>
               )}
               {onDeleteAll && (
                 <button
                   onClick={onDeleteAll}
-                  className="px-4 py-2 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 text-sm font-semibold transition-colors flex items-center gap-2"
+                  className={`${isMobile ? 'px-3 py-1.5 text-xs' : 'px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm'} rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 font-semibold transition-colors flex items-center gap-1 sm:gap-2 whitespace-nowrap`}
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className={`${isMobile ? 'w-4 h-4' : 'w-4 sm:w-5 h-4 sm:h-5'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
-                  Delete all
+                  <span className="hidden sm:inline">Delete all</span>
                 </button>
               )}
             </>
