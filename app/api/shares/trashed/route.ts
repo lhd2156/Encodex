@@ -84,11 +84,60 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    let resolvedFileId = fileId as string | undefined;
+
+    // Validate receiver has an active share and can edit
+    const share = resolvedFileId
+      ? await prisma.share.findFirst({
+          where: {
+            fileId: resolvedFileId,
+            recipientEmail: {
+              equals: userEmail,
+              mode: 'insensitive',
+            },
+          },
+          select: {
+            id: true,
+            fileId: true,
+            permissions: true,
+          },
+        })
+      : await prisma.share.findFirst({
+          where: {
+            id: shareId,
+            recipientEmail: {
+              equals: userEmail,
+              mode: 'insensitive',
+            },
+          },
+          select: {
+            id: true,
+            fileId: true,
+            permissions: true,
+          },
+        });
+
+    if (!share) {
+      return NextResponse.json(
+        { error: 'Share not found' },
+        { status: 404 }
+      );
+    }
+
+    const effectiveFileId = resolvedFileId || share.fileId;
+    const recipientPermission = share.permissions || 'view';
+    if (recipientPermission !== 'edit') {
+      return NextResponse.json(
+        { error: 'Forbidden: edit permission required' },
+        { status: 403 }
+      );
+    }
+
     // Add to receiver's trash (upsert to handle duplicates)
     const trashedShare = await prisma.receiverTrashedShare.upsert({
       where: {
         fileId_recipientEmail: {
-          fileId: fileId,
+          fileId: effectiveFileId,
           recipientEmail: userEmail,
         },
       },
@@ -97,8 +146,8 @@ export async function POST(req: NextRequest) {
         isDeleted: false,
       },
       create: {
-        shareId: shareId || fileId,
-        fileId: fileId,
+        shareId: share.id,
+        fileId: effectiveFileId,
         recipientEmail: userEmail,
         trashedAt: new Date(),
         isDeleted: false,
