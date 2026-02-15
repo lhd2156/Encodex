@@ -517,11 +517,68 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    const file = await prisma.file.findFirst({
+      where: {
+        id: fileId,
+      },
+      select: {
+        id: true,
+        ownerEmail: true,
+      },
+    });
+
+    if (!file) {
+      return NextResponse.json(
+        { error: 'File not found' },
+        { status: 404 }
+      );
+    }
+
+    const isOwner = file.ownerEmail.toLowerCase() === userEmail.toLowerCase();
+    let whereClause: any = { fileId };
+
+    if (!isOwner) {
+      const recipientShare = await prisma.share.findFirst({
+        where: {
+          fileId,
+          recipientEmail: {
+            equals: userEmail,
+            mode: 'insensitive',
+          },
+        },
+        select: {
+          permissions: true,
+        },
+      });
+
+      if (!recipientShare) {
+        return NextResponse.json(
+          { error: 'Unauthorized' },
+          { status: 403 }
+        );
+      }
+
+      const recipientPermission = recipientShare.permissions || 'view';
+      if (recipientPermission !== 'edit') {
+        return NextResponse.json(
+          { error: 'Forbidden: edit permission required' },
+          { status: 403 }
+        );
+      }
+
+      // Recipient edits only their own share metadata
+      whereClause = {
+        fileId,
+        recipientEmail: {
+          equals: userEmail,
+          mode: 'insensitive',
+        },
+      };
+    }
+
     // Update all shares for this file
     const result = await prisma.share.updateMany({
-      where: {
-        fileId,
-      },
+      where: whereClause,
       data: updateData,
     });
 

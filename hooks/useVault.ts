@@ -70,6 +70,7 @@ export interface FileItem {
   uploaderName?: string; // NEW: Live display name of uploader (when different from owner)
   isSharedFile?: boolean;
   isReceivedShare?: boolean;
+  sharePermission?: SharePermission;
   insideSharedFolder?: boolean; 
   sharedWith?: string[]; // List of emails this file is shared with
 }
@@ -87,6 +88,12 @@ export type SharePermission = 'view' | 'edit';
 const emailsMatch = (a?: string | null, b?: string | null): boolean => {
   if (!a || !b) return false;
   return a.toLowerCase() === b.toLowerCase();
+};
+
+const canEditReceivedShare = (file: FileItem, currentUserEmail: string): boolean => {
+  const isReceivedShare = !!(file.isReceivedShare || (file.owner && !emailsMatch(file.owner, currentUserEmail)));
+  if (!isReceivedShare) return true;
+  return file.sharePermission === 'edit';
 };
 
 export function useVault(userEmail: string, userName?: string, masterKey?: CryptoKey) {
@@ -337,6 +344,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
               parentFolderId: share.parentFolderId || null,
               owner: share.file.ownerEmail,
               isSharedFile: true,
+              sharePermission: share.permissions === 'edit' ? 'edit' : 'view',
             } as any;
             
             tombstone.originalSharedId = share.fileId;
@@ -391,6 +399,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
             parentFolderId: share.parentFolderId || null,
             owner: share.file.ownerEmail,
             isSharedFile: true,
+            sharePermission: share.permissions === 'edit' ? 'edit' : 'view',
           } as any;
 
           tombstone.originalSharedId = share.fileId;
@@ -686,6 +695,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
           uploaderName: share.file.uploaderName || undefined,
           isSharedFile: true,
           isReceivedShare: true as any,
+          sharePermission: share.permissions === 'edit' ? 'edit' : 'view',
           isFavorite, // Use loaded favorite state
         };
       });
@@ -725,6 +735,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
               parentFolderId: share.parentFolderId || null,
               owner: share.file.ownerEmail,
               isSharedFile: true,
+              sharePermission: share.permissions === 'edit' ? 'edit' : 'view',
             } as any;
             
             tombstone.originalSharedId = share.fileId;
@@ -1659,6 +1670,11 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
 
     const isReceivedShare = file.isSharedFile && !emailsMatch(file.owner, userEmail);
 
+    if (isReceivedShare && !canEditReceivedShare(file, userEmail)) {
+      alert('You have view-only access for this shared item.');
+      return;
+    }
+
     // FIX: Only block renaming OWNER's files in trash - receivers CAN rename shared files in their trash
     if (isInTrash && !isReceivedShare) {
       return;
@@ -1784,6 +1800,11 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
     if (file.isSharedFile && file.owner && file.owner !== userEmail) {
       if (!ensureUser('handleDeleteFile')) return;
 
+      if (!canEditReceivedShare(file, userEmail)) {
+        alert('You have view-only access for this shared item.');
+        return;
+      }
+
       // FIX 5: Decrease storage for received shares when deleted
       if (file.isReceivedShare && file.type !== 'folder') {
         setStorageUsed((prev) => Math.max(0, prev - file.size));
@@ -1819,6 +1840,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
         parentFolderId: item.parentFolderId,
         originalParentId: item.parentFolderId,
         originalSharedId: item.id,
+        sharePermission: item.sharePermission,
         sharedMeta: {
           ownerId: item.owner,
           ownerName: (item as any).ownerName || undefined,
@@ -2331,6 +2353,11 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
     if (!file) {
       return;
     }
+
+    if (!canEditReceivedShare(file, userEmail)) {
+      alert('You have view-only access for this shared item.');
+      return;
+    }
     
     // Fetch recipients from API
     let fileRecipients: string[] = [];
@@ -2363,6 +2390,11 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
     const targetIsShared = targetFolderId ? targetRecipients.length > 0 : false;
     const targetFolderOwner = targetFolder?.owner || userEmail;
     const targetIsReceivedShare = targetFolder?.isReceivedShare || (targetFolder?.owner && targetFolder.owner !== userEmail);
+
+    if (targetFolder && !canEditReceivedShare(targetFolder, userEmail)) {
+      alert('You cannot move items into a view-only shared folder.');
+      return;
+    }
     
     if (isFileShared && targetFolderId && !targetIsShared && !targetIsReceivedShare) {
       alert(`Cannot move shared file "${file.name}" into an unshared folder. Share the folder first, or move to a different location.`);
@@ -3143,6 +3175,12 @@ const handleBulkDelete = async () => {
     const uniqueFilesToDelete = Array.from(
       new Map(filesToDelete.map((f) => [f.id, f])).values()
     );
+
+    const viewOnlyItem = uniqueFilesToDelete.find((file) => !canEditReceivedShare(file, userEmail));
+    if (viewOnlyItem) {
+      alert('Selection contains view-only shared items. Remove them to continue.');
+      return;
+    }
 
 
     // Create deleted items with unique names for local state
