@@ -33,6 +33,21 @@ export interface ShareRecipient {
   permissions: SharePermission;
 }
 
+export interface TemporaryShareLink {
+  id: string;
+  fileId: string;
+  token: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface TemporaryShareLinkCreateResult {
+  success: boolean;
+  shareUrl?: string;
+  error?: string;
+}
+
 // Helper to get auth token
 const getAuthToken = () => typeof window !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
 

@@ -2,7 +2,12 @@
 
 import React, { useState } from 'react';
 import Image from 'next/image';
-import type { SharePermission, ShareRecipient } from '@/lib/sharedFilesManager';
+import type {
+  SharePermission,
+  ShareRecipient,
+  TemporaryShareLink,
+  TemporaryShareLinkCreateResult,
+} from '@/lib/sharedFilesManager';
 
 const formatEmailDisplay = (email: string): string => {
   if (!email) return '';
@@ -25,9 +30,13 @@ type ShareModalProps = {
   fileName: string;
   fileId?: string | null;
   currentSharedWith?: ShareRecipient[];
+  temporaryShareLinks?: TemporaryShareLink[];
+  temporaryLinksLoading?: boolean;
   onShare: (recipientEmail: string, permissions: SharePermission) => boolean | Promise<boolean>;
   onUnshare?: (recipientEmail: string) => boolean | Promise<boolean>;
   onUpdatePermission?: (recipientEmail: string, permissions: SharePermission) => boolean | Promise<boolean>;
+  onCreateTemporaryLink?: (expiresAtIso: string) => Promise<TemporaryShareLinkCreateResult>;
+  onRevokeTemporaryLink?: (linkId: string) => boolean | Promise<boolean>;
 };
 
 export default function ShareModal({
@@ -39,9 +48,13 @@ export default function ShareModal({
   fileName,
   fileId,
   currentSharedWith = [],
+  temporaryShareLinks = [],
+  temporaryLinksLoading = false,
   onShare,
   onUnshare,
   onUpdatePermission,
+  onCreateTemporaryLink,
+  onRevokeTemporaryLink,
 }: ShareModalProps) {
   const [recipientEmail, setRecipientEmail] = useState('');
   const [sharePermission, setSharePermission] = useState<SharePermission>('view');
@@ -49,6 +62,11 @@ export default function ShareModal({
   const [success, setSuccess] = useState(false);
   const [isUnshareSuccess, setIsUnshareSuccess] = useState(false);
   const [updatingPermissionFor, setUpdatingPermissionFor] = useState<string | null>(null);
+  const [linkDurationHours, setLinkDurationHours] = useState<'24' | '72' | '168'>('24');
+  const [tempLinkError, setTempLinkError] = useState('');
+  const [tempLinkSuccess, setTempLinkSuccess] = useState('');
+  const [creatingLink, setCreatingLink] = useState(false);
+  const [revokingLinkId, setRevokingLinkId] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -92,6 +110,70 @@ export default function ShareModal({
     })();
   };
 
+  const getShareUrl = (token: string): string => {
+    if (typeof window === 'undefined') return `/share/${token}`;
+    return `${window.location.origin}/share/${token}`;
+  };
+
+  const isLinkActive = (link: TemporaryShareLink): boolean => {
+    if (link.revokedAt) return false;
+    return new Date(link.expiresAt) > new Date();
+  };
+
+  const formatDateTime = (value: string): string => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  };
+
+  const copyLink = async (token: string) => {
+    try {
+      await navigator.clipboard.writeText(getShareUrl(token));
+      setTempLinkError('');
+      setTempLinkSuccess('Link copied to clipboard.');
+    } catch {
+      setTempLinkError('Unable to copy link. Please copy it manually.');
+    }
+  };
+
+  const handleCreateTemporaryLink = async () => {
+    if (!onCreateTemporaryLink || !fileId) return;
+
+    const hours = Number(linkDurationHours);
+    const expiresAtIso = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+
+    setCreatingLink(true);
+    setTempLinkError('');
+    setTempLinkSuccess('');
+
+    const result = await onCreateTemporaryLink(expiresAtIso);
+    setCreatingLink(false);
+
+    if (!result.success) {
+      setTempLinkError(result.error || 'Failed to create temporary link.');
+      return;
+    }
+
+    setTempLinkError('');
+    setTempLinkSuccess(result.shareUrl ? `Temporary link created: ${result.shareUrl}` : 'Temporary link created.');
+  };
+
+  const handleRevokeTemporaryLink = async (linkId: string) => {
+    if (!onRevokeTemporaryLink) return;
+    setRevokingLinkId(linkId);
+    setTempLinkError('');
+    setTempLinkSuccess('');
+    const ok = await onRevokeTemporaryLink(linkId);
+    setRevokingLinkId(null);
+
+    if (!ok) {
+      setTempLinkError('Failed to revoke link. Please try again.');
+      return;
+    }
+
+    setTempLinkSuccess('Temporary link revoked.');
+  };
+
   const handleClose = () => {
     setRecipientEmail('');
     setSharePermission('view');
@@ -99,6 +181,11 @@ export default function ShareModal({
     setSuccess(false);
     setIsUnshareSuccess(false);
     setUpdatingPermissionFor(null);
+    setLinkDurationHours('24');
+    setTempLinkError('');
+    setTempLinkSuccess('');
+    setCreatingLink(false);
+    setRevokingLinkId(null);
     onClose();
   };
 
@@ -106,12 +193,12 @@ export default function ShareModal({
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-gradient-to-br from-blue-900 to-slate-900 border border-blue-700/30 rounded-2xl p-8 w-full max-w-lg shadow-2xl">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-white">Share "{fileName}"</h2>
+          <h2 className="text-2xl font-bold text-white">Share &quot;{fileName}&quot;</h2>
           <button
             onClick={handleClose}
             className="text-gray-400 hover:text-white text-2xl transition-colors"
           >
-            ×
+            &times;
           </button>
         </div>
 
@@ -172,6 +259,81 @@ export default function ShareModal({
           </div>
         )}
 
+        <div className="mb-6 p-4 bg-blue-950/20 rounded-lg border border-blue-700/30">
+          <p className="text-sm text-gray-400 mb-3">Temporary share link</p>
+          <div className="flex gap-2 mb-3">
+            <select
+              value={linkDurationHours}
+              onChange={(e) => setLinkDurationHours((e.target.value === '72' || e.target.value === '168') ? e.target.value : '24')}
+              className="flex-1 px-3 py-2 bg-slate-900/80 border border-blue-700/40 rounded text-sm text-white focus:outline-none focus:border-orange-400"
+            >
+              <option value="24">Expires in 24 hours</option>
+              <option value="72">Expires in 3 days</option>
+              <option value="168">Expires in 7 days</option>
+            </select>
+            <button
+              onClick={handleCreateTemporaryLink}
+              disabled={!onCreateTemporaryLink || !fileId || creatingLink}
+              className="px-4 py-2 rounded bg-orange-500 hover:bg-orange-600 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold transition-colors"
+            >
+              {creatingLink ? 'Creating...' : 'Create link'}
+            </button>
+          </div>
+
+          {tempLinkError && (
+            <p className="text-red-400 text-sm mb-2">{tempLinkError}</p>
+          )}
+          {tempLinkSuccess && (
+            <p className="text-green-400 text-sm mb-2 break-all">{tempLinkSuccess}</p>
+          )}
+
+          {temporaryLinksLoading ? (
+            <p className="text-xs text-gray-400">Loading links...</p>
+          ) : temporaryShareLinks.length === 0 ? (
+            <p className="text-xs text-gray-400">No temporary links yet.</p>
+          ) : (
+            <div className="space-y-2 max-h-36 overflow-y-auto pr-1">
+              {temporaryShareLinks.map((link) => {
+                const active = isLinkActive(link);
+                const statusLabel = link.revokedAt ? 'Revoked' : active ? 'Active' : 'Expired';
+                return (
+                  <div key={link.id} className="bg-slate-900/50 border border-blue-700/30 rounded px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-gray-300">Expires: {formatDateTime(link.expiresAt)}</p>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                        statusLabel === 'Active'
+                          ? 'bg-green-500/20 text-green-300'
+                          : statusLabel === 'Expired'
+                            ? 'bg-yellow-500/20 text-yellow-200'
+                            : 'bg-red-500/20 text-red-300'
+                      }`}>
+                        {statusLabel}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={() => copyLink(link.token)}
+                        className="px-3 py-1 rounded bg-slate-700/60 hover:bg-slate-700 text-xs text-white transition-colors"
+                      >
+                        Copy link
+                      </button>
+                      {active && onRevokeTemporaryLink && (
+                        <button
+                          onClick={() => handleRevokeTemporaryLink(link.id)}
+                          disabled={revokingLinkId === link.id}
+                          className="px-3 py-1 rounded bg-red-500/20 hover:bg-red-500/30 disabled:opacity-60 text-xs text-red-300 transition-colors"
+                        >
+                          {revokingLinkId === link.id ? 'Revoking...' : 'Revoke'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {success && (
           <div className="mb-6 p-4 bg-orange-500/20 border-orange-400/50 rounded-lg border animate-fade-in">
             <div className="flex items-center gap-3">
@@ -228,7 +390,7 @@ export default function ShareModal({
             <div className="mb-6 p-4 bg-blue-950/30 rounded-lg border border-blue-700/20">
               <p className="text-sm text-gray-300 flex items-start gap-2">
                 <Image src="/encodex-share.svg" alt="Share" width={16} height={16} className="flex-shrink-0 mt-0.5" />
-                <span>When you share this file, it appears in the recipient&apos;s <span className="text-orange-400 font-semibold">"Shared"</span> section.</span>
+                <span>When you share this file, it appears in the recipient&apos;s <span className="text-orange-400 font-semibold">&quot;Shared&quot;</span> section.</span>
               </p>
               <p className="text-sm text-gray-300 mt-2 flex items-start gap-2">
                 <svg className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 24 24">
