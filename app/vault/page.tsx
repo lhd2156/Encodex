@@ -24,7 +24,13 @@ import { downloadRecoveryKey } from '@/lib/recoveryKey';
 import { decryptFileData, importFileKey, unwrapFileKey } from '@/lib/crypto';
 import { useVault } from '@/hooks/useVault';
 import { useVaultContext } from '@/lib/vault/vault-context';
-import { sharedFilesManager, type SharePermission, type ShareRecipient } from '@/lib/sharedFilesManager';
+import {
+  sharedFilesManager,
+  type SharePermission,
+  type ShareRecipient,
+  type TemporaryShareLink,
+  type TemporaryShareLinkCreateResult,
+} from '@/lib/sharedFilesManager';
 import { getSession, isSessionValid, clearSession } from '@/lib/session';
 
 const DynamicStorageStats = dynamic(
@@ -162,6 +168,8 @@ export default function VaultPage() {
   const [shareModalOpen, setShareModalOpen] = React.useState(false);
   const [shareTargetId, setShareTargetId] = React.useState<string | null>(null);
   const [currentShareRecipients, setCurrentShareRecipients] = React.useState<ShareRecipient[]>([]);
+  const [temporaryShareLinks, setTemporaryShareLinks] = React.useState<TemporaryShareLink[]>([]);
+  const [temporaryLinksLoading, setTemporaryLinksLoading] = React.useState(false);
   const [viewingFile, setViewingFile] = React.useState<{ 
     url: string; 
     name: string; 
@@ -518,17 +526,198 @@ export default function VaultPage() {
     setSelectedFiles(newSelected);
   };
 
+  const getShareableFileKeyForTemporaryLink = async (fileId: string): Promise<number[] | null> => {
+    const authToken = sessionStorage.getItem('auth_token');
+    if (!authToken || !masterKey) return null;
+
+    try {
+      const response = await fetch(`/api/files/download/${fileId}`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const { wrappedKey } = await response.json();
+      if (!wrappedKey || !Array.isArray(wrappedKey) || wrappedKey.length === 0) {
+        return null;
+      }
+
+      const fileKey = await unwrapFileKey(
+        new Uint8Array(wrappedKey).buffer,
+        masterKey
+      );
+      const rawKey = await crypto.subtle.exportKey('raw', fileKey);
+      return Array.from(new Uint8Array(rawKey));
+    } catch {
+      return null;
+    }
+  };
+
+  const fetchTemporaryShareLinks = async (fileId: string) => {
+    const authToken = sessionStorage.getItem('auth_token');
+    if (!authToken) {
+      setTemporaryShareLinks([]);
+      setTemporaryLinksLoading(false);
+      return;
+    }
+
+    setTemporaryLinksLoading(true);
+
+    try {
+      const response = await fetch(`/api/share-links?fileId=${encodeURIComponent(fileId)}`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        setTemporaryShareLinks([]);
+        return;
+      }
+
+      const data = await response.json();
+      const rawLinks: Array<{
+        id?: string;
+        fileId?: string;
+        token?: string;
+        expiresAt?: string;
+        revokedAt?: string | null;
+        createdAt?: string;
+      }> = Array.isArray(data?.data) ? data.data : [];
+
+      const links = rawLinks.map((link) => ({
+        id: String(link.id || ''),
+        fileId: String(link.fileId || ''),
+        token: String(link.token || ''),
+        expiresAt: String(link.expiresAt || ''),
+        revokedAt: link.revokedAt ? String(link.revokedAt) : null,
+        createdAt: String(link.createdAt || ''),
+      }));
+
+      setTemporaryShareLinks(links);
+    } catch {
+      setTemporaryShareLinks([]);
+    } finally {
+      setTemporaryLinksLoading(false);
+    }
+  };
+
+  const handleCreateTemporaryShareLink = async (expiresAtIso: string): Promise<TemporaryShareLinkCreateResult> => {
+    if (!shareTargetId) {
+      return { success: false, error: 'No file selected.' };
+    }
+
+    const selectedFile = files.find((file) => file.id === shareTargetId);
+    if (!selectedFile || selectedFile.type === 'folder') {
+      return { success: false, error: 'Temporary links are supported for files only.' };
+    }
+
+    const authToken = sessionStorage.getItem('auth_token');
+    if (!authToken) {
+      return { success: false, error: 'Not authenticated. Please log in again.' };
+    }
+
+    if (!masterKey) {
+      return { success: false, error: 'Unlock your vault first to create a share link.' };
+    }
+
+    const sharedFileKey = await getShareableFileKeyForTemporaryLink(shareTargetId);
+    if (!sharedFileKey || sharedFileKey.length === 0) {
+      return { success: false, error: 'Could not prepare encryption key. Try unlocking vault again.' };
+    }
+
+    try {
+      const response = await fetch('/api/share-links', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          fileId: shareTargetId,
+          expiresAt: expiresAtIso,
+          sharedFileKey,
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result?.success || !result?.data) {
+        return { success: false, error: result?.error || 'Failed to create temporary link.' };
+      }
+
+      const createdLink: TemporaryShareLink = {
+        id: String(result.data.id || ''),
+        fileId: String(result.data.fileId || shareTargetId),
+        token: String(result.data.token || ''),
+        expiresAt: String(result.data.expiresAt || expiresAtIso),
+        revokedAt: result.data.revokedAt ? String(result.data.revokedAt) : null,
+        createdAt: String(result.data.createdAt || new Date().toISOString()),
+      };
+
+      setTemporaryShareLinks((prev) => [createdLink, ...prev.filter((link) => link.id !== createdLink.id)]);
+
+      const shareUrl = typeof result.data.shareUrl === 'string' && result.data.shareUrl.length > 0
+        ? result.data.shareUrl
+        : (typeof window !== 'undefined' ? `${window.location.origin}/share/${createdLink.token}` : undefined);
+
+      return { success: true, shareUrl };
+    } catch {
+      return { success: false, error: 'Failed to create temporary link.' };
+    }
+  };
+
+  const handleRevokeTemporaryShareLink = async (linkId: string): Promise<boolean> => {
+    const authToken = sessionStorage.getItem('auth_token');
+    if (!authToken) return false;
+
+    try {
+      const response = await fetch(`/api/share-links/${encodeURIComponent(linkId)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        return false;
+      }
+
+      setTemporaryShareLinks((prev) =>
+        prev.map((link) => (
+          link.id === linkId
+            ? { ...link, revokedAt: new Date().toISOString() }
+            : link
+        ))
+      );
+
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const openShareModal = async (id: string) => {
     setShareTargetId(id);
     setCurrentShareRecipients([]);
+    setTemporaryShareLinks([]);
+    setTemporaryLinksLoading(true);
     setShareModalOpen(true);
-    // Fetch recipients asynchronously
-    try {
-      const recipients = await sharedFilesManager.getShareRecipientsWithPermissionsAsync(id);
-      setCurrentShareRecipients(recipients);
-    } catch (e) {
-      
-    }
+
+    await Promise.all([
+      (async () => {
+        try {
+          const recipients = await sharedFilesManager.getShareRecipientsWithPermissionsAsync(id);
+          setCurrentShareRecipients(recipients);
+        } catch {
+          setCurrentShareRecipients([]);
+        }
+      })(),
+      fetchTemporaryShareLinks(id),
+    ]);
   };
 
   const openFolderModal = () => {
@@ -1777,6 +1966,8 @@ export default function VaultPage() {
           setShareModalOpen(false);
           setShareTargetId(null);
           setCurrentShareRecipients([]);
+          setTemporaryShareLinks([]);
+          setTemporaryLinksLoading(false);
         }}
         currentUserName={userName}
         currentUserEmail={userEmail}
@@ -1784,6 +1975,8 @@ export default function VaultPage() {
         fileName={shareTargetId ? files.find(f => f.id === shareTargetId)?.name || '' : ''}
         fileId={shareTargetId}
         currentSharedWith={currentShareRecipients}
+        temporaryShareLinks={temporaryShareLinks}
+        temporaryLinksLoading={temporaryLinksLoading}
         onShare={(recipientEmail, permissions: SharePermission) => {
           if (!shareTargetId) return false;
           return handleShareFile(shareTargetId, recipientEmail, userName, permissions);
@@ -1818,6 +2011,8 @@ export default function VaultPage() {
           }
           return ok;
         }}
+        onCreateTemporaryLink={handleCreateTemporaryShareLink}
+        onRevokeTemporaryLink={handleRevokeTemporaryShareLink}
       />
 
       {/* File Viewer */}

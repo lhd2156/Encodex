@@ -57,6 +57,7 @@ model File {
   parent          File?     @relation("FileHierarchy", fields: [parentFolderId], references: [id], onDelete: Cascade)
   children        File[]    @relation("FileHierarchy")
   shares          Share[]
+  shareLinks      ShareLink[]
   
   @@index([userId])
   @@index([ownerEmail])
@@ -84,6 +85,24 @@ model Share {
   @@index([recipientEmail])
   @@index([fileId])
   @@map("shares")
+}
+
+model ShareLink {
+  id            String    @id @default(cuid())
+  fileId        String
+  token         String    @unique
+  createdByEmail String
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  sharedFileKey Bytes?
+  createdAt     DateTime  @default(now())
+
+  file          File      @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+  @@index([createdByEmail])
+  @@index([expiresAt])
+  @@map("share_links")
 }
 
 // ============================================
