@@ -4,6 +4,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { getUserEmailFromToken } from '@/lib/auth';
 
+type SharePermission = 'view' | 'edit';
+
+const isValidSharePermission = (value: unknown): value is SharePermission =>
+  value === 'view' || value === 'edit';
+
 /**
  * GET /api/shares
  * Get all shares for current user (both sent and received)
@@ -157,6 +162,8 @@ export async function POST(req: NextRequest) {
       fileSize,
       fileType,
       recipientEmail: rawRecipientEmail,
+      permissions: rawPermissions,
+      sharedFileKey,
       parentFolderId,
       fileData, // base64 encoded file data (optional)
     } = await req.json();
@@ -171,6 +178,37 @@ export async function POST(req: NextRequest) {
 
     // Normalize recipient email to lowercase for case-insensitive comparison
     const recipientEmail = rawRecipientEmail.toLowerCase();
+    const permissions: SharePermission = rawPermissions === undefined
+      ? 'view'
+      : isValidSharePermission(rawPermissions)
+        ? rawPermissions
+        : 'view';
+
+    if (rawPermissions !== undefined && !isValidSharePermission(rawPermissions)) {
+      return NextResponse.json(
+        { error: 'Invalid permissions value. Allowed values: view, edit' },
+        { status: 400 }
+      );
+    }
+
+    let sharedFileKeyBuffer: Buffer | null = null;
+    if (sharedFileKey !== undefined && sharedFileKey !== null) {
+      if (!Array.isArray(sharedFileKey)) {
+        return NextResponse.json(
+          { error: 'sharedFileKey must be an array of bytes' },
+          { status: 400 }
+        );
+      }
+
+      try {
+        sharedFileKeyBuffer = Buffer.from(sharedFileKey);
+      } catch {
+        return NextResponse.json(
+          { error: 'Invalid sharedFileKey format' },
+          { status: 400 }
+        );
+      }
+    }
 
     // Check if file exists and user owns it (case-insensitive email comparison)
     const file = await prisma.file.findFirst({
@@ -313,6 +351,8 @@ export async function POST(req: NextRequest) {
         recipientEmail,
         recipientName: recipientDisplayName, // Store the actual name
         parentFolderId,
+        permissions,
+        sharedFileKey: sharedFileKeyBuffer,
         sharedAt: new Date(),
       },
     });
@@ -387,7 +427,14 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const { fileId, fileName, parentFolderId } = await req.json();
+    const {
+      fileId,
+      fileName,
+      parentFolderId,
+      recipientEmail: rawRecipientEmail,
+      permissions: rawPermissions,
+      recursive,
+    } = await req.json();
 
     if (!fileId) {
       return NextResponse.json(
@@ -396,10 +443,79 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
+    if (rawPermissions !== undefined) {
+      if (!rawRecipientEmail) {
+        return NextResponse.json(
+          { error: 'recipientEmail required when updating permissions' },
+          { status: 400 }
+        );
+      }
+
+      if (!isValidSharePermission(rawPermissions)) {
+        return NextResponse.json(
+          { error: 'Invalid permissions value. Allowed values: view, edit' },
+          { status: 400 }
+        );
+      }
+
+      const ownerFile = await prisma.file.findFirst({
+        where: {
+          id: fileId,
+          ownerEmail: {
+            equals: userEmail,
+            mode: 'insensitive',
+          },
+        },
+        select: { id: true },
+      });
+
+      if (!ownerFile) {
+        return NextResponse.json(
+          { error: 'File not found or unauthorized' },
+          { status: 404 }
+        );
+      }
+
+      const recipientEmail = rawRecipientEmail.toLowerCase();
+      const targetFileIds = recursive ? await getDescendantFileIds(fileId) : [fileId];
+
+      const result = await prisma.share.updateMany({
+        where: {
+          fileId: { in: targetFileIds },
+          recipientEmail: {
+            equals: recipientEmail,
+            mode: 'insensitive',
+          },
+        },
+        data: {
+          permissions: rawPermissions,
+        },
+      });
+
+      if (result.count === 0) {
+        return NextResponse.json(
+          { error: 'Share not found for recipient' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        count: result.count,
+      });
+    }
+
     // Build update data
     const updateData: any = {};
     if (fileName !== undefined) updateData.fileName = fileName;
     if (parentFolderId !== undefined) updateData.parentFolderId = parentFolderId;
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json(
+        { error: 'No fields provided to update' },
+        { status: 400 }
+      );
+    }
 
     // Update all shares for this file
     const result = await prisma.share.updateMany({

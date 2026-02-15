@@ -3,9 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { fileStorage } from '@/components/pdf/fileStorage';
 import { sharedFilesManager, SHARED_FILES_EVENT, SHARED_FILES_SYNC_TRIGGER, SHARED_FILES_KEY } from '@/lib/sharedFilesManager';
-import { decryptFileData, unwrapFileKey, encryptFile, wrapFileKey } from '@/lib/crypto';
+import { decryptFileData, importFileKey, unwrapFileKey, encryptFile, wrapFileKey } from '@/lib/crypto';
 
-// ========== API INTEGRATION (ADDED - keeps all localStorage logic intact) ==========
 const getAuthToken = () => typeof window !== 'undefined' ? sessionStorage.getItem('auth_token') : null;
 const apiCall = async (endpoint: string, options: RequestInit = {}): Promise<any> => {
   const token = getAuthToken();
@@ -42,7 +41,6 @@ const apiCall = async (endpoint: string, options: RequestInit = {}): Promise<any
       return { success: false };
     }
   } catch (error) {
-    // error silenced for production
     throw error;
   }
 };
@@ -72,7 +70,7 @@ export interface FileItem {
   uploaderName?: string; // NEW: Live display name of uploader (when different from owner)
   isSharedFile?: boolean;
   isReceivedShare?: boolean;
-  insideSharedFolder?: boolean; // NEW: Set when file is uploaded to someone else's shared folder
+  insideSharedFolder?: boolean; 
   sharedWith?: string[]; // List of emails this file is shared with
 }
 
@@ -83,6 +81,7 @@ export interface UploadProgress {
 }
 
 export type TabType = 'vault' | 'shared' | 'favorites' | 'recent' | 'trash';
+export type SharePermission = 'view' | 'edit';
 
 // Helper for case-insensitive email comparison
 const emailsMatch = (a?: string | null, b?: string | null): boolean => {
@@ -2597,21 +2596,26 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
                 continue;
               }
 
-              const { encryptedData, iv, wrappedKey, mimeType } = await response.json();
+              const { encryptedData, iv, wrappedKey, sharedFileKey, mimeType } = await response.json();
 
               // Check if file is encrypted (has iv and wrappedKey)
               const isEncrypted = iv && iv.length > 0 && wrappedKey && wrappedKey.length > 0;
               
               let blob: Blob;
               if (isEncrypted) {
-                if (!masterKey) {
-                  // Can't decrypt without master key - skip this file
-                  continue;
+                let fileKey: CryptoKey;
+                if (sharedFileKey && Array.isArray(sharedFileKey) && sharedFileKey.length > 0) {
+                  fileKey = await importFileKey(new Uint8Array(sharedFileKey).buffer);
+                } else {
+                  if (!masterKey) {
+                    // Can't decrypt without master key - skip this file
+                    continue;
+                  }
+                  fileKey = await unwrapFileKey(
+                    new Uint8Array(wrappedKey).buffer,
+                    masterKey
+                  );
                 }
-                const fileKey = await unwrapFileKey(
-                  new Uint8Array(wrappedKey).buffer,
-                  masterKey
-                );
                 blob = await decryptFileData(
                   new Uint8Array(encryptedData).buffer,
                   fileKey,
@@ -2656,21 +2660,26 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
           return;
         }
 
-        const { encryptedData, iv, wrappedKey, mimeType } = await response.json();
+        const { encryptedData, iv, wrappedKey, sharedFileKey, mimeType } = await response.json();
 
         // Check if file is encrypted (has iv and wrappedKey)
         const isEncrypted = iv && iv.length > 0 && wrappedKey && wrappedKey.length > 0;
         
         let blob: Blob;
         if (isEncrypted) {
-          if (!masterKey) {
-            alert('File is encrypted. Please unlock your vault to download.');
-            return;
+          let fileKey: CryptoKey;
+          if (sharedFileKey && Array.isArray(sharedFileKey) && sharedFileKey.length > 0) {
+            fileKey = await importFileKey(new Uint8Array(sharedFileKey).buffer);
+          } else {
+            if (!masterKey) {
+              alert('File is encrypted. Please unlock your vault to download.');
+              return;
+            }
+            fileKey = await unwrapFileKey(
+              new Uint8Array(wrappedKey).buffer,
+              masterKey
+            );
           }
-          const fileKey = await unwrapFileKey(
-            new Uint8Array(wrappedKey).buffer,
-            masterKey
-          );
           blob = await decryptFileData(
             new Uint8Array(encryptedData).buffer,
             fileKey,
@@ -2740,7 +2749,12 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
   };
 
 // ─── sharing ────────────────────────────────────────────────────────
-  const handleShareFile = async (id: string, recipientEmail: string, senderName?: string): Promise<boolean> => {
+  const handleShareFile = async (
+    id: string,
+    recipientEmail: string,
+    senderName?: string,
+    permissions: SharePermission = 'view'
+  ): Promise<boolean> => {
     
     const file = files.find((f) => f.id === id);
     if (!file) {
@@ -2756,6 +2770,39 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
     // Sanity check: warn if ID looks like temp ID
     if (id.length < 15 && !id.startsWith('c')) {
     }
+
+    const normalizedPermission: SharePermission = permissions === 'edit' ? 'edit' : 'view';
+
+    const getShareableFileKey = async (item: FileItem): Promise<number[] | undefined> => {
+      if (item.type === 'folder') return undefined;
+      if (!authToken || !masterKey) return undefined;
+
+      try {
+        const response = await fetch(`/api/files/download/${item.id}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`,
+          },
+        });
+
+        if (!response.ok) {
+          return undefined;
+        }
+
+        const { wrappedKey } = await response.json();
+        if (!wrappedKey || !Array.isArray(wrappedKey) || wrappedKey.length === 0) {
+          return undefined;
+        }
+
+        const fileKey = await unwrapFileKey(
+          new Uint8Array(wrappedKey).buffer,
+          masterKey
+        );
+        const rawKey = await crypto.subtle.exportKey('raw', fileKey);
+        return Array.from(new Uint8Array(rawKey));
+      } catch {
+        return undefined;
+      }
+    };
 
 
     // Helper function to recursively get all descendants of a folder
@@ -2791,6 +2838,8 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
     // HYBRID: Await ROOT item share, background for descendants
     // This gives accurate feedback while keeping it fast
     try {
+      const rootSharedFileKey = await getShareableFileKey(file);
+
       // Share the ROOT item first and await it
       const rootResponse = await fetch('/api/shares', {
         method: 'POST',
@@ -2804,6 +2853,8 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
           fileSize: file.size,
           fileType: file.type,
           recipientEmail,
+          permissions: normalizedPermission,
+          sharedFileKey: rootSharedFileKey,
           parentFolderId: file.parentFolderId,
         }),
       });
@@ -2847,6 +2898,7 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
           
           const sharePromises = descendants.map(async (item) => {
             try {
+              const sharedFileKey = await getShareableFileKey(item);
               const response = await fetch('/api/shares', {
                 method: 'POST',
                 headers: {
@@ -2859,6 +2911,8 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
                   fileSize: item.size,
                   fileType: item.type,
                   recipientEmail,
+                  permissions: normalizedPermission,
+                  sharedFileKey,
                   parentFolderId: item.parentFolderId,
                 }),
               });
@@ -2896,6 +2950,53 @@ export function useVault(userEmail: string, userName?: string, masterKey?: Crypt
           sharedWith: currentSharedWith.filter((e: string) => e.toLowerCase() !== normalizedRecipient)
         };
       }));
+      return false;
+    }
+  };
+
+  const handleUpdateSharePermission = async (
+    id: string,
+    recipientEmail: string,
+    permissions: SharePermission
+  ): Promise<boolean> => {
+    if (!ensureUser('handleUpdateSharePermission')) return false;
+
+    const file = files.find((f) => f.id === id);
+    if (!file) return false;
+
+    const normalizedRecipient = recipientEmail.toLowerCase().trim();
+    if (!normalizedRecipient) return false;
+
+    const normalizedPermission: SharePermission = permissions === 'edit' ? 'edit' : 'view';
+
+    try {
+      const response = await fetch('/api/shares', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          fileId: id,
+          recipientEmail: normalizedRecipient,
+          permissions: normalizedPermission,
+          recursive: file.type === 'folder',
+        }),
+      });
+
+      if (!response.ok) {
+        return false;
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        debouncedSyncSharedFiles();
+        window.dispatchEvent(new Event(SHARED_FILES_EVENT));
+        return true;
+      }
+
+      return false;
+    } catch (error) {
       return false;
     }
   };
@@ -3829,6 +3930,7 @@ const handleCleanupGlitchedFiles = async () => {
     handleDownloadFile,
     handleToggleFavorite,
     handleShareFile,
+    handleUpdateSharePermission,
     handleUnshareFile,
     handleUnshareAll,
     handleBulkDelete,

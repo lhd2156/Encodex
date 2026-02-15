@@ -5,7 +5,6 @@
  * implementation. All operations now go through the backend API.
  */
 
-// Event constants for cross-component communication
 export const SHARED_FILES_KEY = 'shared_files_global';
 export const SHARED_FILES_DATA_PREFIX = 'shared_file_data_';
 export const SHARED_FILES_EVENT = 'shared-files-updated';
@@ -23,6 +22,15 @@ export interface SharedFileEntry {
   originalCreatedAt: Date;
   parentFolderId?: string | null;
   sharedFileDataKey?: string;
+}
+
+export type SharePermission = 'view' | 'edit';
+
+export interface ShareRecipient {
+  email: string;
+  name?: string;
+  sharedAt?: string;
+  permissions: SharePermission;
 }
 
 // Helper to get auth token
@@ -72,18 +80,13 @@ class SharedFilesManager {
     }
   }
 
-  /**
-   * Get files shared WITH a user (user is recipient)
-   * Now uses API instead of localStorage
-   */
+
   async getSharedWithMeAsync(currentUserEmail: string): Promise<SharedFileEntry[]> {
     try {
       const response = await apiCall('/api/shares');
-      // Handle no auth token (returns null) or empty response
       if (!response) return [];
       const allShares = response.data || [];
       
-      // Normalize email for case-insensitive comparison
       const normalizedEmail = currentUserEmail.toLowerCase();
       
       const sharedWithMe = allShares
@@ -175,9 +178,37 @@ class SharedFilesManager {
     }
   }
 
-  /**
-   * Synchronous version for backwards compatibility
-   */
+
+  async getShareRecipientsWithPermissionsAsync(fileId: string): Promise<ShareRecipient[]> {
+    try {
+      const token = getAuthToken();
+      if (!token) return [];
+
+      const response = await fetch(`/api/shares/${encodeURIComponent(fileId)}/recipients`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const result = await response.json();
+      const recipients = Array.isArray(result?.data) ? result.data : [];
+
+      return recipients.map((recipient: any) => ({
+        email: recipient.email,
+        name: recipient.name,
+        sharedAt: recipient.sharedAt,
+        permissions: recipient.permissions === 'edit' ? 'edit' : 'view',
+      }));
+    } catch (error) {
+      return [];
+    }
+  }
+
   getShareRecipients(fileId: string): string[] {
     // Return empty immediately - callers should update to use async version
     return [];
@@ -297,6 +328,37 @@ class SharedFilesManager {
       return false;
     } catch (error) {
       
+      return false;
+    }
+  }
+
+  /**
+   * Update permissions for a share recipient
+   */
+  async updateSharePermission(
+    fileId: string,
+    recipientEmail: string,
+    permissions: SharePermission,
+    recursive: boolean = false
+  ): Promise<boolean> {
+    try {
+      const response = await apiCall('/api/shares', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          fileId,
+          recipientEmail,
+          permissions,
+          recursive,
+        }),
+      });
+
+      if (!response) return false;
+      if (response.success) {
+        this.triggerSync();
+        return true;
+      }
+      return false;
+    } catch (error) {
       return false;
     }
   }

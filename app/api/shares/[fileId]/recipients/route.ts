@@ -23,7 +23,10 @@ export async function GET(
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        ownerEmail: userEmail,
+        ownerEmail: {
+          equals: userEmail,
+          mode: 'insensitive',
+        },
       },
     });
 

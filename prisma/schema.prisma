@@ -71,6 +71,7 @@ model Share {
   fileName        String
   fileSize        BigInt?
   fileType        String?
+  sharedFileKey   Bytes?
   recipientEmail  String
   recipientName   String?
   parentFolderId  String?

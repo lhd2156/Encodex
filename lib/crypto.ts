@@ -141,6 +141,16 @@ export async function unwrapFileKey(
     masterKey,
     "AES-KW",
     { name: "AES-GCM", length: 256 },
+    true,
+    ["decrypt"]
+  );
+}
+
+export async function importFileKey(rawKey: ArrayBuffer): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    rawKey,
+    { name: "AES-GCM", length: 256 },
     false,
     ["decrypt"]
   );
