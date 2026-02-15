@@ -21,9 +21,10 @@ import FileViewer from '@/components/pdf/FileViewer';
 import UnlockVaultModal from '@/components/vault/UnlockVaultModal';
 import { fileStorage } from '@/components/pdf/fileStorage';
 import { downloadRecoveryKey } from '@/lib/recoveryKey';
+import { decryptFileData, importFileKey, unwrapFileKey } from '@/lib/crypto';
 import { useVault } from '@/hooks/useVault';
 import { useVaultContext } from '@/lib/vault/vault-context';
-import { sharedFilesManager } from '@/lib/sharedFilesManager';
+import { sharedFilesManager, type SharePermission, type ShareRecipient } from '@/lib/sharedFilesManager';
 import { getSession, isSessionValid, clearSession } from '@/lib/session';
 
 const DynamicStorageStats = dynamic(
@@ -137,6 +138,7 @@ export default function VaultPage() {
     handleDownloadFile,
     handleToggleFavorite,
     handleShareFile,
+    handleUpdateSharePermission,
     handleBulkDelete,
     handleBulkRestore,
     handleBulkPermanentDelete,
@@ -159,7 +161,7 @@ export default function VaultPage() {
   const [completedUploads, setCompletedUploads] = React.useState<string[]>([]);
   const [shareModalOpen, setShareModalOpen] = React.useState(false);
   const [shareTargetId, setShareTargetId] = React.useState<string | null>(null);
-  const [currentShareRecipients, setCurrentShareRecipients] = React.useState<string[]>([]);
+  const [currentShareRecipients, setCurrentShareRecipients] = React.useState<ShareRecipient[]>([]);
   const [viewingFile, setViewingFile] = React.useState<{ 
     url: string; 
     name: string; 
@@ -522,7 +524,7 @@ export default function VaultPage() {
     setShareModalOpen(true);
     // Fetch recipients asynchronously
     try {
-      const recipients = await sharedFilesManager.getShareRecipientsAsync(id);
+      const recipients = await sharedFilesManager.getShareRecipientsWithPermissionsAsync(id);
       setCurrentShareRecipients(recipients);
     } catch (e) {
       
@@ -560,18 +562,80 @@ export default function VaultPage() {
     if (!file || file.type === 'folder') return;
     
     try {
-      const url = await fileStorage.getFileURL(fileId);
-      if (url) {
-        setViewingFile({ 
-          url, 
-          name: file.name, 
-          type: file.name,
-          fileId: file.id,
-          isFavorite: file.isFavorite || false
+      // 1) Fast path: local IndexedDB
+      let url = await fileStorage.getFileURL(fileId);
+
+      // 2) Fallback: fetch encrypted payload from API, decrypt, cache locally
+      if (!url) {
+        const authToken = sessionStorage.getItem('auth_token');
+        if (!authToken) {
+          alert('Not authenticated. Please log in again.');
+          return;
+        }
+
+        const response = await fetch(`/api/files/download/${fileId}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`,
+          },
         });
-      } else {
-        alert('File not found. It may not have been uploaded properly.');
+
+        if (!response.ok) {
+          if ((file as any).isReceivedShare) {
+            alert('This shared file cannot be opened on this account yet.');
+          } else {
+            alert('File not found. It may not have been uploaded properly.');
+          }
+          return;
+        }
+
+        const { encryptedData, iv, wrappedKey, sharedFileKey, mimeType } = await response.json();
+        const isEncrypted = iv && iv.length > 0 && wrappedKey && wrappedKey.length > 0;
+
+        let blob: Blob;
+        if (isEncrypted) {
+          try {
+            let fileKey: CryptoKey;
+            if (sharedFileKey && Array.isArray(sharedFileKey) && sharedFileKey.length > 0) {
+              fileKey = await importFileKey(new Uint8Array(sharedFileKey).buffer);
+            } else {
+              if (!masterKey) {
+                alert('File is encrypted. Please unlock your vault first.');
+                return;
+              }
+              fileKey = await unwrapFileKey(
+                new Uint8Array(wrappedKey).buffer,
+                masterKey
+              );
+            }
+            blob = await decryptFileData(
+              new Uint8Array(encryptedData).buffer,
+              fileKey,
+              new Uint8Array(iv),
+              mimeType || 'application/octet-stream'
+            );
+          } catch {
+            if ((file as any).isReceivedShare) {
+              alert('Unable to decrypt this shared file with your current vault key.');
+            } else {
+              alert('Failed to decrypt file. Please re-unlock your vault and try again.');
+            }
+            return;
+          }
+        } else {
+          blob = new Blob([new Uint8Array(encryptedData)], { type: mimeType || 'application/octet-stream' });
+        }
+
+        await fileStorage.saveFile(fileId, blob);
+        url = URL.createObjectURL(blob);
       }
+
+      setViewingFile({ 
+        url, 
+        name: file.name, 
+        type: file.name,
+        fileId: file.id,
+        isFavorite: file.isFavorite || false
+      });
     } catch (error) {
       
       alert('Failed to open file. Please try again.');
@@ -1720,9 +1784,9 @@ export default function VaultPage() {
         fileName={shareTargetId ? files.find(f => f.id === shareTargetId)?.name || '' : ''}
         fileId={shareTargetId}
         currentSharedWith={currentShareRecipients}
-        onShare={(recipientEmail) => {
+        onShare={(recipientEmail, permissions: SharePermission) => {
           if (!shareTargetId) return false;
-          return handleShareFile(shareTargetId, recipientEmail, userName);
+          return handleShareFile(shareTargetId, recipientEmail, userName, permissions);
         }}
         onUnshare={async (recipientEmail: string) => {
           if (!shareTargetId) return false;
@@ -1730,7 +1794,7 @@ export default function VaultPage() {
             const ok = await sharedFilesManager.unshareFile(shareTargetId, recipientEmail);
             if (ok) {
               // Update local state immediately
-              setCurrentShareRecipients(prev => prev.filter(e => e !== recipientEmail));
+              setCurrentShareRecipients(prev => prev.filter(e => e.email.toLowerCase() !== recipientEmail.toLowerCase()));
             }
             // Trigger a sync so UI updates immediately
             sharedFilesManager.triggerSync();
@@ -1739,6 +1803,20 @@ export default function VaultPage() {
             
             return false;
           }
+        }}
+        onUpdatePermission={async (recipientEmail: string, permissions: SharePermission) => {
+          if (!shareTargetId) return false;
+          const ok = await handleUpdateSharePermission(shareTargetId, recipientEmail, permissions);
+          if (ok) {
+            setCurrentShareRecipients(prev =>
+              prev.map(recipient =>
+                recipient.email.toLowerCase() === recipientEmail.toLowerCase()
+                  ? { ...recipient, permissions }
+                  : recipient
+              )
+            );
+          }
+          return ok;
         }}
       />
 
