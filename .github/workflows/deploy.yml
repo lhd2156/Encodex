@@ -44,6 +44,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          request_pty: true
           script: |
             echo '${{ secrets.ENV_FILE }}' > /tmp/.env
             sudo kubectl create secret generic encodex-secrets \
@@ -53,4 +54,4 @@ jobs:
             sudo kubectl apply -f /home/ubuntu/k8s/deployment.yml
             sudo kubectl apply -f /home/ubuntu/k8s/service.yml
             sudo kubectl set image deployment/encodex-app encodex=${{ steps.login-ecr.outputs.registry }}/encodex:${{ github.sha }}
-            sudo kubectl rollout status deployment/encodex-app
+            sudo kubectl rollout status deployment/encodex-app --timeout=120s
