@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: encodex-app
+  namespace: default
+  labels:
+    app: encodex
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: encodex
+  template:
+    metadata:
+      labels:
+        app: encodex
+    spec:
+      containers:
+        - name: encodex
+          image: 509194952795.dkr.ecr.us-east-2.amazonaws.com/encodex:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: encodex-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
