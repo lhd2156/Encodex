@@ -1,14 +1,10 @@
-# License
-
-MIT License
-
-## Live Demo
-
-Check out the app live at: [https://encodex-vault.vercel.app/](https://encodex-vault.vercel.app/)
-
 # Encodex
 
 Encodex is a secure document storage web application designed for individuals and teams who need to safely store, organize, and access important documents from anywhere. The platform uses end-to-end encryption to ensure that only you and those you choose to share with can access your files—cloud providers and third parties cannot view your data.
+
+## Live Demo
+
+Check out the app live at: [https://encodexdrive.com](https://encodexdrive.com)
 
 ## Key Features
 
