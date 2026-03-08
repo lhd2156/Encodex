@@ -30,7 +30,11 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -f docker/Dockerfile -t $ECR_REGISTRY/encodex:$IMAGE_TAG -t $ECR_REGISTRY/encodex:latest .
+          docker build -f docker/Dockerfile \
+            --build-arg JWT_SECRET="${{ secrets.JWT_SECRET }}" \
+            --build-arg DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+            -t $ECR_REGISTRY/encodex:$IMAGE_TAG \
+            -t $ECR_REGISTRY/encodex:latest .
           docker push $ECR_REGISTRY/encodex:$IMAGE_TAG
           docker push $ECR_REGISTRY/encodex:latest
 
