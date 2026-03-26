@@ -51,6 +51,12 @@ jobs:
               --from-env-file=/tmp/.env \
               --dry-run=client -o yaml | sudo kubectl apply -f -
             rm /tmp/.env
+            ECR_TOKEN=$(aws ecr get-login-password --region us-east-2)
+            sudo kubectl create secret docker-registry ecr-secret \
+              --docker-server=509194952795.dkr.ecr.us-east-2.amazonaws.com \
+              --docker-username=AWS \
+              --docker-password=$ECR_TOKEN \
+              --dry-run=client -o yaml | sudo kubectl apply -f -
             sudo kubectl apply -f /home/ubuntu/k8s/deployment.yml
             sudo kubectl apply -f /home/ubuntu/k8s/service.yml
             sudo kubectl set image deployment/encodex-app encodex=${{ steps.login-ecr.outputs.registry }}/encodex:${{ github.sha }}

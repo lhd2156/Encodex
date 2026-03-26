@@ -15,6 +15,8 @@ spec:
       labels:
         app: encodex
     spec:
+      imagePullSecrets:
+        - name: ecr-secret
       containers:
         - name: encodex
           image: 509194952795.dkr.ecr.us-east-2.amazonaws.com/encodex:latest
