@@ -3,7 +3,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { getSession, isSessionValid, updateSession } from '@/lib/session';
+import { getSession, isSessionValid, updateSession, clearSession } from '@/lib/session';
 import { downloadRecoveryKey } from '@/lib/recoveryKey';
 
 export default function SettingsPage() {
@@ -29,6 +29,11 @@ export default function SettingsPage() {
   const [showRecoveryKeyModal, setShowRecoveryKeyModal] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState('');
   const [copied, setCopied] = useState(false);
+
+  // Delete account states
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (!isSessionValid()) {
@@ -343,6 +348,47 @@ export default function SettingsPage() {
     return 'U';
   };
 
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+    setIsDeleting(true);
+
+    try {
+      const authToken = sessionStorage.getItem('auth_token');
+      if (!authToken) {
+        setErrorMessage('Not authenticated. Please log in again.');
+        setIsDeleting(false);
+        return;
+      }
+
+      const response = await fetch('/api/auth/delete-account', {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        setErrorMessage(data.error || 'Failed to delete account');
+        setIsDeleting(false);
+        return;
+      }
+
+      // Clean up all local data
+      clearSession();
+      sessionStorage.clear();
+      localStorage.removeItem('user');
+      localStorage.removeItem(`profile_image_${userEmail}`);
+      localStorage.removeItem(`vault_salt_${userEmail}`);
+
+      // Redirect to start
+      router.push('/start');
+    } catch {
+      setErrorMessage('Network error while deleting account. Please try again.');
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
       {/* Header */}
@@ -570,6 +616,45 @@ export default function SettingsPage() {
             Back up key
           </button>
         </div>
+
+        {/* Delete Account - Danger Zone */}
+        <div
+          className="bg-red-950/20 rounded-xl border border-red-800/30 p-8 mt-6"
+          style={{ scrollMarginTop: '2rem' }}
+        >
+          <h2 className="text-xl font-semibold text-red-400 mb-2">Danger Zone</h2>
+          <p className="text-gray-400 text-sm mb-2">
+            Permanently delete your Encodex account and all associated data. This action
+            is irreversible — all your encrypted files, share links, and account
+            information will be permanently removed.
+          </p>
+          <p className="text-red-400/70 text-xs mb-6">
+            This cannot be undone. Make sure to download any important files before proceeding.
+          </p>
+
+          <button
+            onClick={() => {
+              setDeleteConfirmText('');
+              setShowDeleteModal(true);
+            }}
+            className="px-6 py-2.5 rounded-lg transition-all font-medium cursor-pointer"
+            style={{
+              background: 'rgba(220, 38, 38, 0.15)',
+              border: '1px solid rgba(220, 38, 38, 0.3)',
+              color: '#f87171',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'rgba(220, 38, 38, 0.25)';
+              e.currentTarget.style.borderColor = 'rgba(220, 38, 38, 0.5)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'rgba(220, 38, 38, 0.15)';
+              e.currentTarget.style.borderColor = 'rgba(220, 38, 38, 0.3)';
+            }}
+          >
+            Delete my account
+          </button>
+        </div>
       </div>
 
       {/* Recovery Key Modal */}
@@ -745,6 +830,151 @@ export default function SettingsPage() {
                     )}
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Confirmation Modal */}
+      {showDeleteModal && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 9999 }}>
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              backgroundColor: 'rgba(0, 0, 0, 0.6)',
+              backdropFilter: 'blur(4px)',
+            }}
+            onClick={() => setShowDeleteModal(false)}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '1rem',
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              style={{
+                width: '520px',
+                maxWidth: '95vw',
+                background: 'linear-gradient(to bottom, rgb(30, 20, 20), rgb(15, 10, 10))',
+                borderRadius: '1rem',
+                border: '1px solid rgba(220, 38, 38, 0.3)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.6)',
+                pointerEvents: 'auto',
+                padding: '2.5rem',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Warning icon */}
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.5rem' }}>
+                <div
+                  style={{
+                    width: '64px',
+                    height: '64px',
+                    borderRadius: '16px',
+                    background: 'rgba(220, 38, 38, 0.15)',
+                    border: '1px solid rgba(220, 38, 38, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
+                  </svg>
+                </div>
+              </div>
+
+              <h2 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#fff', textAlign: 'center', marginBottom: '0.75rem' }}>
+                Delete your account?
+              </h2>
+              <p style={{ color: '#94a3b8', fontSize: '0.875rem', textAlign: 'center', lineHeight: 1.7, marginBottom: '2rem' }}>
+                This will permanently delete your account, all encrypted files, shares,
+                and associated data. <span style={{ color: '#f87171', fontWeight: 600 }}>This action cannot be undone.</span>
+              </p>
+
+              {/* Confirmation input */}
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ display: 'block', fontSize: '0.8125rem', color: '#94a3b8', marginBottom: '0.5rem' }}>
+                  Type <span style={{ color: '#f87171', fontWeight: 700, fontFamily: 'monospace' }}>DELETE</span> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  autoFocus
+                  style={{
+                    width: '100%',
+                    padding: '0.75rem 1rem',
+                    borderRadius: '0.5rem',
+                    background: 'rgba(15, 23, 42, 0.8)',
+                    border: deleteConfirmText === 'DELETE'
+                      ? '1px solid rgba(220, 38, 38, 0.5)'
+                      : '1px solid rgba(51, 65, 85, 0.5)',
+                    color: '#fff',
+                    fontSize: '0.9375rem',
+                    fontFamily: 'monospace',
+                    letterSpacing: '0.1em',
+                    outline: 'none',
+                    transition: 'border-color 0.2s',
+                  }}
+                />
+              </div>
+
+              {/* Buttons */}
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  style={{
+                    flex: 1,
+                    padding: '0.75rem',
+                    borderRadius: '0.5rem',
+                    border: '1px solid rgba(100, 116, 139, 0.4)',
+                    background: 'transparent',
+                    color: '#cbd5e1',
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.6)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(100, 116, 139, 0.4)';
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteAccount}
+                  disabled={deleteConfirmText !== 'DELETE' || isDeleting}
+                  style={{
+                    flex: 1,
+                    padding: '0.75rem',
+                    borderRadius: '0.5rem',
+                    border: 'none',
+                    background: deleteConfirmText === 'DELETE' ? '#dc2626' : 'rgba(220, 38, 38, 0.2)',
+                    color: deleteConfirmText === 'DELETE' ? '#fff' : 'rgba(248, 113, 113, 0.4)',
+                    fontSize: '0.875rem',
+                    fontWeight: 600,
+                    cursor: deleteConfirmText === 'DELETE' ? 'pointer' : 'not-allowed',
+                    transition: 'all 0.2s',
+                    opacity: isDeleting ? 0.6 : 1,
+                  }}
+                >
+                  {isDeleting ? 'Deleting...' : 'Delete permanently'}
+                </button>
               </div>
             </div>
           </div>

@@ -285,7 +285,7 @@ export default function RegisterPage() {
                   className="w-4 h-4 mt-0.5 rounded border-neutral-600 text-orange-500 cursor-pointer flex-shrink-0"
                 />
                 <span className="text-[10px] sm:text-xs text-neutral-400 leading-snug">
-                  I have read, understood, and agree to Encodex's <span className="text-orange-400 hover:underline cursor-pointer">Terms of Service</span>.
+                  I have read, understood, and agree to Encodex's <span onClick={() => router.push('/terms')} className="text-orange-400 hover:underline cursor-pointer">Terms of Service</span>.
                 </span>
               </label>
             </div>
