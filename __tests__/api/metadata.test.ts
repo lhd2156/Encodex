@@ -1,28 +1,41 @@
-import {
-  DELETE as deleteFavorite,
-  GET as listFavorites,
-  POST as addFavorite,
-} from '@/app/api/metadata/favorites/route';
-import {
-  DELETE as deleteHiddenMetadata,
-  GET as listHiddenMetadata,
-  POST as addHiddenMetadata,
-} from '@/app/api/metadata/hidden/route';
-import {
-  DELETE as deleteReceiverTrashed,
-  GET as listReceiverTrashed,
-  POST as addReceiverTrashed,
-} from '@/app/api/metadata/receiver-trashed/route';
-import {
-  DELETE as deleteTempDeleted,
-  GET as listTempDeleted,
-  PATCH as updateTempDeleted,
-  POST as addTempDeleted,
-} from '@/app/api/metadata/temp-deleted/route';
 import { createJsonRequest, mockAuthenticatedUser } from '../helpers/auth.helper';
 import { prisma } from '../helpers/db.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let listFavorites: typeof import('@/app/api/metadata/favorites/route').GET;
+let addFavorite: typeof import('@/app/api/metadata/favorites/route').POST;
+let deleteFavorite: typeof import('@/app/api/metadata/favorites/route').DELETE;
+let listHiddenMetadata: typeof import('@/app/api/metadata/hidden/route').GET;
+let addHiddenMetadata: typeof import('@/app/api/metadata/hidden/route').POST;
+let deleteHiddenMetadata: typeof import('@/app/api/metadata/hidden/route').DELETE;
+let listReceiverTrashed: typeof import('@/app/api/metadata/receiver-trashed/route').GET;
+let addReceiverTrashed: typeof import('@/app/api/metadata/receiver-trashed/route').POST;
+let deleteReceiverTrashed: typeof import('@/app/api/metadata/receiver-trashed/route').DELETE;
+let listTempDeleted: typeof import('@/app/api/metadata/temp-deleted/route').GET;
+let addTempDeleted: typeof import('@/app/api/metadata/temp-deleted/route').POST;
+let updateTempDeleted: typeof import('@/app/api/metadata/temp-deleted/route').PATCH;
+let deleteTempDeleted: typeof import('@/app/api/metadata/temp-deleted/route').DELETE;
 
 describe('Metadata API routes', () => {
+  beforeEach(async () => {
+    ({ GET: listFavorites, POST: addFavorite, DELETE: deleteFavorite } =
+      await loadApiModule<typeof import('@/app/api/metadata/favorites/route')>(
+        '@/app/api/metadata/favorites/route',
+      ));
+    ({ GET: listHiddenMetadata, POST: addHiddenMetadata, DELETE: deleteHiddenMetadata } =
+      await loadApiModule<typeof import('@/app/api/metadata/hidden/route')>(
+        '@/app/api/metadata/hidden/route',
+      ));
+    ({ GET: listReceiverTrashed, POST: addReceiverTrashed, DELETE: deleteReceiverTrashed } =
+      await loadApiModule<typeof import('@/app/api/metadata/receiver-trashed/route')>(
+        '@/app/api/metadata/receiver-trashed/route',
+      ));
+    ({ GET: listTempDeleted, POST: addTempDeleted, PATCH: updateTempDeleted, DELETE: deleteTempDeleted } =
+      await loadApiModule<typeof import('@/app/api/metadata/temp-deleted/route')>(
+        '@/app/api/metadata/temp-deleted/route',
+      ));
+  });
+
   describe('Favorites metadata', () => {
     it('GET /api/metadata/favorites returns 401 when unauthenticated', async () => {
       const response = await listFavorites(createJsonRequest('http://localhost/api/metadata/favorites'));

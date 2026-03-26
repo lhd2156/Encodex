@@ -1,16 +1,6 @@
-import { GET as listFiles } from '@/app/api/files/route';
-import {
-  DELETE as moveFileToTrash,
-  GET as getFileById,
-  PATCH as updateFileById,
-} from '@/app/api/files/[id]/route';
-import { GET as downloadFile } from '@/app/api/files/download/[id]/route';
-import { DELETE as permanentDeleteFiles } from '@/app/api/files/permanent-delete/route';
-import { GET as listReceivedFiles } from '@/app/api/files/received/route';
-import { GET as listSentFiles } from '@/app/api/files/sent/route';
-import { POST as uploadFile } from '@/app/api/files/upload/route';
 import {
   createJsonRequest,
+  getUserEmailFromToken,
   mockAuthenticatedEmail,
   mockAuthenticatedUser,
 } from '../helpers/auth.helper';
@@ -21,12 +11,54 @@ import {
   prisma,
 } from '../helpers/db.helper';
 import { createUploadPayload } from '../helpers/file.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let listFiles: typeof import('@/app/api/files/route').GET;
+let moveFileToTrash: typeof import('@/app/api/files/[id]/route').DELETE;
+let getFileById: typeof import('@/app/api/files/[id]/route').GET;
+let updateFileById: typeof import('@/app/api/files/[id]/route').PATCH;
+let downloadFile: typeof import('@/app/api/files/download/[id]/route').GET;
+let permanentDeleteFiles: typeof import('@/app/api/files/permanent-delete/route').DELETE;
+let listReceivedFiles: typeof import('@/app/api/files/received/route').GET;
+let listSentFiles: typeof import('@/app/api/files/sent/route').GET;
+let uploadFile: typeof import('@/app/api/files/upload/route').POST;
 
 const idContext = (id = 'file-1') => ({
   params: Promise.resolve({ id }),
 });
 
 describe('Files API routes', () => {
+  beforeEach(async () => {
+    ({ GET: listFiles } =
+      await loadApiModule<typeof import('@/app/api/files/route')>(
+        '@/app/api/files/route',
+      ));
+    ({ DELETE: moveFileToTrash, GET: getFileById, PATCH: updateFileById } =
+      await loadApiModule<typeof import('@/app/api/files/[id]/route')>(
+        '@/app/api/files/[id]/route',
+      ));
+    ({ GET: downloadFile } =
+      await loadApiModule<typeof import('@/app/api/files/download/[id]/route')>(
+        '@/app/api/files/download/[id]/route',
+      ));
+    ({ DELETE: permanentDeleteFiles } =
+      await loadApiModule<typeof import('@/app/api/files/permanent-delete/route')>(
+        '@/app/api/files/permanent-delete/route',
+      ));
+    ({ GET: listReceivedFiles } =
+      await loadApiModule<typeof import('@/app/api/files/received/route')>(
+        '@/app/api/files/received/route',
+      ));
+    ({ GET: listSentFiles } =
+      await loadApiModule<typeof import('@/app/api/files/sent/route')>(
+        '@/app/api/files/sent/route',
+      ));
+    ({ POST: uploadFile } =
+      await loadApiModule<typeof import('@/app/api/files/upload/route')>(
+        '@/app/api/files/upload/route',
+      ));
+  });
+
   describe('GET /api/files', () => {
     it('returns 401 when the request is unauthenticated', async () => {
       const response = await listFiles(createJsonRequest('http://localhost/api/files'));
@@ -368,7 +400,7 @@ describe('Files API routes', () => {
     });
 
     it('returns 401 when the token is invalid', async () => {
-      mockAuthenticatedEmail(undefined as unknown as string);
+      getUserEmailFromToken.mockResolvedValue(null);
 
       const response = await permanentDeleteFiles(
         createJsonRequest('http://localhost/api/files/permanent-delete', {
@@ -538,7 +570,7 @@ describe('Files API routes', () => {
     });
 
     it('returns 401 when the token is invalid', async () => {
-      mockAuthenticatedEmail(undefined as unknown as string);
+      getUserEmailFromToken.mockResolvedValue(null);
 
       const response = await listReceivedFiles(
         createJsonRequest('http://localhost/api/files/received', {
@@ -599,7 +631,7 @@ describe('Files API routes', () => {
     });
 
     it('returns 401 when the token is invalid', async () => {
-      mockAuthenticatedEmail(undefined as unknown as string);
+      getUserEmailFromToken.mockResolvedValue(null);
 
       const response = await listSentFiles(
         createJsonRequest('http://localhost/api/files/sent', {
@@ -616,10 +648,19 @@ describe('Files API routes', () => {
     it('returns files shared by the current user with recipient display names', async () => {
       mockAuthenticatedEmail('owner@example.com');
       prisma.share.findMany.mockResolvedValue([
-        createShareFixture({
+        {
+          id: 'share-1',
           recipientEmail: 'recipient@example.com',
-          file: createFileFixture(),
-        }),
+          sharedAt: new Date('2026-01-02T00:00:00.000Z'),
+          file: {
+            id: 'file-1',
+            name: 'report.pdf',
+            size: 1024,
+            type: 'file',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            parentFolderId: null,
+          },
+        },
       ]);
       prisma.user.findMany.mockResolvedValue([
         {

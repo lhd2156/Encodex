@@ -1,8 +1,11 @@
-import { DELETE as revokeShareLink } from '@/app/api/share-links/[id]/route';
-import { GET as accessShareLink } from '@/app/api/share-links/access/[token]/route';
-import { GET as listShareLinks, POST as createShareLink } from '@/app/api/share-links/route';
 import { createJsonRequest, getUserEmailFromToken, mockAuthenticatedEmail } from '../helpers/auth.helper';
 import { createFileFixture, createShareLinkFixture, prisma } from '../helpers/db.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let revokeShareLink: typeof import('@/app/api/share-links/[id]/route').DELETE;
+let accessShareLink: typeof import('@/app/api/share-links/access/[token]/route').GET;
+let listShareLinks: typeof import('@/app/api/share-links/route').GET;
+let createShareLink: typeof import('@/app/api/share-links/route').POST;
 
 const tokenContext = (token = 'share-token-123') => ({
   params: Promise.resolve({ token }),
@@ -13,6 +16,21 @@ const idContext = (id = 'link-1') => ({
 });
 
 describe('Share-link API routes', () => {
+  beforeEach(async () => {
+    ({ DELETE: revokeShareLink } =
+      await loadApiModule<typeof import('@/app/api/share-links/[id]/route')>(
+        '@/app/api/share-links/[id]/route',
+      ));
+    ({ GET: accessShareLink } =
+      await loadApiModule<typeof import('@/app/api/share-links/access/[token]/route')>(
+        '@/app/api/share-links/access/[token]/route',
+      ));
+    ({ GET: listShareLinks, POST: createShareLink } =
+      await loadApiModule<typeof import('@/app/api/share-links/route')>(
+        '@/app/api/share-links/route',
+      ));
+  });
+
   describe('GET /api/share-links', () => {
     it('returns 401 when the bearer token is missing', async () => {
       const response = await listShareLinks(createJsonRequest('http://localhost/api/share-links'));
@@ -37,7 +55,14 @@ describe('Share-link API routes', () => {
     it('returns the current user share links filtered by fileId', async () => {
       mockAuthenticatedEmail('owner@example.com');
       prisma.shareLink.findMany.mockResolvedValue([
-        createShareLinkFixture(),
+        {
+          id: 'link-1',
+          fileId: 'file-1',
+          token: 'share-token-123',
+          expiresAt: new Date('2026-12-31T00:00:00.000Z'),
+          revokedAt: null,
+          createdAt: new Date('2026-01-03T00:00:00.000Z'),
+        },
       ]);
 
       const response = await listShareLinks(
@@ -301,7 +326,7 @@ describe('Share-link API routes', () => {
         iv: [5, 6, 7, 8],
         wrappedKey: [9, 10, 11, 12],
         sharedFileKey: [21, 22, 23],
-        expiresAt: new Date('2026-12-31T00:00:00.000Z'),
+        expiresAt: '2026-12-31T00:00:00.000Z',
       });
     });
   });

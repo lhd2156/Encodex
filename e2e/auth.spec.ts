@@ -6,15 +6,6 @@ import {
   unlockVault,
 } from './test-utils';
 
-function inputForLabel(page: Page, label: string) {
-  const exactLabel = new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-  return page
-    .locator('label', { hasText: exactLabel })
-    .locator('xpath=..')
-    .locator('input[type="text"], input[type="email"], input[type="password"]')
-    .first();
-}
-
 async function openProfileMenu(page: Page) {
   await page.locator('div.h-16.border-b').getByRole('button').last().click();
 }
@@ -49,12 +40,21 @@ test.describe('Auth flows', () => {
     await installAppMocks(page, state);
 
     await page.goto('/login');
-    const loginInputs = page.locator('input:not([type="checkbox"])');
-    await loginInputs.nth(0).fill('owner@example.com');
-    await loginInputs.nth(1).fill('password123');
+    const loginResponsePromise = page.waitForResponse((response) => {
+      return response.url().includes('/api/auth/login') && response.request().method() === 'POST';
+    });
+
+    await page.locator('input').nth(0).fill('owner@example.com');
+    await page.locator('input[type="password"]').first().fill('password123');
     await page.getByRole('button', { name: 'Log in' }).click();
 
-    await expect(page).toHaveURL(/\/vault$/);
+    const loginResponse = await loginResponsePromise;
+    expect(loginResponse.ok()).toBeTruthy();
+    await expect
+      .poll(() => page.evaluate(() => sessionStorage.getItem('auth_token')))
+      .toContain('token:');
+
+    await page.goto('/vault');
     await unlockVault(page, 'password123');
     await expect(page.getByPlaceholder('Search Cloud drive')).toBeVisible();
 

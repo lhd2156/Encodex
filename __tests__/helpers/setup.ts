@@ -14,11 +14,6 @@ import {
   storeRecoveryKey,
 } from './recovery.helper';
 
-jest.mock('@/lib/auth', () => jest.requireActual('./auth.helper'));
-jest.mock('@/lib/db', () => jest.requireActual('./db.helper'));
-jest.mock('@/lib/prisma', () => jest.requireActual('./db.helper'));
-jest.mock('@/lib/recoveryKey', () => jest.requireActual('./recovery.helper'));
-
 process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'test-secret';
 
 if (!global.crypto) {

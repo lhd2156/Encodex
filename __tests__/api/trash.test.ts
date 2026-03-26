@@ -1,15 +1,36 @@
-import { DELETE as permanentlyDeleteTrashedFile } from '@/app/api/trash/[id]/route';
-import { POST as moveToTrash } from '@/app/api/trash/move/route';
-import { POST as restoreFromTrash } from '@/app/api/trash/restore/route';
-import { GET as listTrash } from '@/app/api/trash/route';
 import { createJsonRequest, getUserEmailFromToken, mockAuthenticatedEmail } from '../helpers/auth.helper';
 import { prisma } from '../helpers/db.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let permanentlyDeleteTrashedFile: typeof import('@/app/api/trash/[id]/route').DELETE;
+let moveToTrash: typeof import('@/app/api/trash/move/route').POST;
+let restoreFromTrash: typeof import('@/app/api/trash/restore/route').POST;
+let listTrash: typeof import('@/app/api/trash/route').GET;
 
 const idContext = (id = 'file-1') => ({
   params: Promise.resolve({ id }),
 });
 
 describe('Trash API routes', () => {
+  beforeEach(async () => {
+    ({ DELETE: permanentlyDeleteTrashedFile } =
+      await loadApiModule<typeof import('@/app/api/trash/[id]/route')>(
+        '@/app/api/trash/[id]/route',
+      ));
+    ({ POST: moveToTrash } =
+      await loadApiModule<typeof import('@/app/api/trash/move/route')>(
+        '@/app/api/trash/move/route',
+      ));
+    ({ POST: restoreFromTrash } =
+      await loadApiModule<typeof import('@/app/api/trash/restore/route')>(
+        '@/app/api/trash/restore/route',
+      ));
+    ({ GET: listTrash } =
+      await loadApiModule<typeof import('@/app/api/trash/route')>(
+        '@/app/api/trash/route',
+      ));
+  });
+
   describe('GET /api/trash', () => {
     it('returns 401 when the bearer token is missing', async () => {
       const response = await listTrash(createJsonRequest('http://localhost/api/trash'));

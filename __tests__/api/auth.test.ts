@@ -1,9 +1,3 @@
-import { DELETE as deleteAccount } from '@/app/api/auth/delete-account/route';
-import { POST as login } from '@/app/api/auth/login/route';
-import { GET as getProfile, PATCH as updateProfile } from '@/app/api/auth/profile/route';
-import { GET as getRecoveryKey } from '@/app/api/auth/recovery-key/route';
-import { POST as resetPassword } from '@/app/api/auth/reset-password/route';
-import { POST as signup } from '@/app/api/auth/signup/route';
 import {
   createDecodedToken,
   createJsonRequest,
@@ -14,8 +8,44 @@ import {
 } from '../helpers/auth.helper';
 import { createUserFixture, prisma } from '../helpers/db.helper';
 import { generateRecoveryKey, storeRecoveryKey } from '../helpers/recovery.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let deleteAccount: typeof import('@/app/api/auth/delete-account/route').DELETE;
+let login: typeof import('@/app/api/auth/login/route').POST;
+let getProfile: typeof import('@/app/api/auth/profile/route').GET;
+let updateProfile: typeof import('@/app/api/auth/profile/route').PATCH;
+let getRecoveryKey: typeof import('@/app/api/auth/recovery-key/route').GET;
+let resetPassword: typeof import('@/app/api/auth/reset-password/route').POST;
+let signup: typeof import('@/app/api/auth/signup/route').POST;
 
 describe('Auth API routes', () => {
+  beforeEach(async () => {
+    ({ DELETE: deleteAccount } =
+      await loadApiModule<typeof import('@/app/api/auth/delete-account/route')>(
+        '@/app/api/auth/delete-account/route',
+      ));
+    ({ POST: login } =
+      await loadApiModule<typeof import('@/app/api/auth/login/route')>(
+        '@/app/api/auth/login/route',
+      ));
+    ({ GET: getProfile, PATCH: updateProfile } =
+      await loadApiModule<typeof import('@/app/api/auth/profile/route')>(
+        '@/app/api/auth/profile/route',
+      ));
+    ({ GET: getRecoveryKey } =
+      await loadApiModule<typeof import('@/app/api/auth/recovery-key/route')>(
+        '@/app/api/auth/recovery-key/route',
+      ));
+    ({ POST: resetPassword } =
+      await loadApiModule<typeof import('@/app/api/auth/reset-password/route')>(
+        '@/app/api/auth/reset-password/route',
+      ));
+    ({ POST: signup } =
+      await loadApiModule<typeof import('@/app/api/auth/signup/route')>(
+        '@/app/api/auth/signup/route',
+      ));
+  });
+
   describe('POST /api/auth/signup', () => {
     it('creates a user, stores a recovery key, and returns auth payload', async () => {
       const createdUser = createUserFixture({

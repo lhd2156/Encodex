@@ -1,27 +1,4 @@
 import {
-  DELETE as deleteShare,
-  GET as listShares,
-  PATCH as updateShare,
-  POST as createShare,
-} from '@/app/api/shares/route';
-import { DELETE as deleteAllShares } from '@/app/api/shares/all/route';
-import {
-  DELETE as unhideShares,
-  GET as listHiddenShares,
-  POST as hideShare,
-} from '@/app/api/shares/hidden/route';
-import { POST as listRecipients } from '@/app/api/shares/recipients/route';
-import {
-  GET as listTempDeletedShares,
-  POST as updateTempDeletedShares,
-} from '@/app/api/shares/temp-deleted/route';
-import {
-  DELETE as restoreTrashedShare,
-  GET as listTrashedShares,
-  POST as trashShare,
-} from '@/app/api/shares/trashed/route';
-import { GET as listFileRecipients } from '@/app/api/shares/[fileId]/recipients/route';
-import {
   createJsonRequest,
   getUserEmailFromToken,
   mockAuthenticatedEmail,
@@ -32,12 +9,60 @@ import {
   createShareFixture,
   prisma,
 } from '../helpers/db.helper';
+import { loadApiModule } from '../helpers/route.helper';
+
+let deleteShare: typeof import('@/app/api/shares/route').DELETE;
+let listShares: typeof import('@/app/api/shares/route').GET;
+let updateShare: typeof import('@/app/api/shares/route').PATCH;
+let createShare: typeof import('@/app/api/shares/route').POST;
+let deleteAllShares: typeof import('@/app/api/shares/all/route').DELETE;
+let unhideShares: typeof import('@/app/api/shares/hidden/route').DELETE;
+let listHiddenShares: typeof import('@/app/api/shares/hidden/route').GET;
+let hideShare: typeof import('@/app/api/shares/hidden/route').POST;
+let listRecipients: typeof import('@/app/api/shares/recipients/route').POST;
+let listTempDeletedShares: typeof import('@/app/api/shares/temp-deleted/route').GET;
+let updateTempDeletedShares: typeof import('@/app/api/shares/temp-deleted/route').POST;
+let restoreTrashedShare: typeof import('@/app/api/shares/trashed/route').DELETE;
+let listTrashedShares: typeof import('@/app/api/shares/trashed/route').GET;
+let trashShare: typeof import('@/app/api/shares/trashed/route').POST;
+let listFileRecipients: typeof import('@/app/api/shares/[fileId]/recipients/route').GET;
 
 const fileContext = (fileId = 'file-1') => ({
   params: Promise.resolve({ fileId }),
 });
 
 describe('Shares API routes', () => {
+  beforeEach(async () => {
+    ({ DELETE: deleteShare, GET: listShares, PATCH: updateShare, POST: createShare } =
+      await loadApiModule<typeof import('@/app/api/shares/route')>(
+        '@/app/api/shares/route',
+      ));
+    ({ DELETE: deleteAllShares } =
+      await loadApiModule<typeof import('@/app/api/shares/all/route')>(
+        '@/app/api/shares/all/route',
+      ));
+    ({ DELETE: unhideShares, GET: listHiddenShares, POST: hideShare } =
+      await loadApiModule<typeof import('@/app/api/shares/hidden/route')>(
+        '@/app/api/shares/hidden/route',
+      ));
+    ({ POST: listRecipients } =
+      await loadApiModule<typeof import('@/app/api/shares/recipients/route')>(
+        '@/app/api/shares/recipients/route',
+      ));
+    ({ GET: listTempDeletedShares, POST: updateTempDeletedShares } =
+      await loadApiModule<typeof import('@/app/api/shares/temp-deleted/route')>(
+        '@/app/api/shares/temp-deleted/route',
+      ));
+    ({ DELETE: restoreTrashedShare, GET: listTrashedShares, POST: trashShare } =
+      await loadApiModule<typeof import('@/app/api/shares/trashed/route')>(
+        '@/app/api/shares/trashed/route',
+      ));
+    ({ GET: listFileRecipients } =
+      await loadApiModule<typeof import('@/app/api/shares/[fileId]/recipients/route')>(
+        '@/app/api/shares/[fileId]/recipients/route',
+      ));
+  });
+
   describe('GET /api/shares', () => {
     it('returns 401 when the bearer token is missing', async () => {
       const response = await listShares(createJsonRequest('http://localhost/api/shares'));
@@ -275,13 +300,19 @@ describe('Shares API routes', () => {
       prisma.hiddenShare.deleteMany.mockResolvedValue({ count: 1 });
       prisma.user.findFirst.mockResolvedValue({ firstName: 'Recipient', lastName: 'Example' });
       prisma.share.create.mockResolvedValue(
-        createShareFixture({
+        {
           id: 'share-1',
+          fileId: 'file-1',
+          fileName: 'report.pdf',
+          fileSize: BigInt(1024),
+          fileType: 'file',
           recipientEmail: 'recipient@example.com',
           recipientName: 'Recipient Example',
           parentFolderId: 'folder-1',
+          permissions: 'edit',
           sharedFileKey: Buffer.from([1, 2, 3]),
-        }),
+          sharedAt: new Date('2026-01-02T00:00:00.000Z'),
+        },
       );
       prisma.receiverTrashedShare.upsert.mockResolvedValue({});
 
@@ -1135,7 +1166,7 @@ describe('Shares API routes', () => {
           {
             email: 'recipient@example.com',
             name: 'Recipient (recipient@example.com)',
-            sharedAt: new Date('2026-01-01T00:00:00.000Z'),
+            sharedAt: '2026-01-01T00:00:00.000Z',
             permissions: 'edit',
           },
         ],
