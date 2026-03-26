@@ -82,7 +82,7 @@ export function createUser(overrides: Partial<UserRecord> = {}): UserRecord {
 }
 
 export function createFile(overrides: Partial<FileRecord> = {}): FileRecord {
-  const isFolder = overrides.isFolder ?? overrides.type === 'folder' ?? false;
+  const isFolder = overrides.isFolder ?? (overrides.type === 'folder');
   return {
     id: 'file-1',
     userId: 'user-1',
